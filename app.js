@@ -115,7 +115,7 @@ const CONTROL_GROUPS = [
       { key: "orbDotSize", label: "Orb size", min: 0.6, max: 1.8, step: 0.01 },
       { key: "orbSolidFill", label: "Orb solid fill", min: 0, max: 1, step: 0.01 },
       { key: "dotProtection", label: "Dot protection", min: 0, max: 1.8, step: 0.01 },
-      { key: "hoverSpacing", label: "Hover spacing", min: 0, max: 1.8, step: 0.01 },
+      { key: "hoverSpacing", label: "Dot spacing", min: 0, max: 1.8, step: 0.01 },
       { key: "motionCohesion", label: "Motion cohesion", min: 0, max: 1.8, step: 0.01 },
       { key: "foregroundCircleAmount", label: "Field density", min: 0.5, max: 2.5, step: 0.01 },
       { key: "sunPointPopulation", label: "Orb density", min: 0.5, max: 3, step: 0.01 },
@@ -801,6 +801,8 @@ function UnifiedPointCloud({ data, controls }) {
     const spacingCoherence = clamp(hoverSpacingControl / 1.8, 0, 1);
     const protectionMotionScale = 1 - clamp(dotProtectionControl * 0.1, 0, 0.18);
     const spacingMotionScale = 1 - clamp(hoverSpacingControl * 0.14, 0, 0.24);
+    const lateralMotionScale = 1 - clamp(spacingCoherence * 0.7, 0, 0.7);
+    const arcMotionScale = 1 - clamp(spacingCoherence * 0.82, 0, 0.82);
     const cohesion = clamp((controls.motionCohesion ?? 1.12) / 1.8, 0, 1);
     const sparseMotion = 0.18 + ((controls.backgroundMotion ?? 1) * 0.82);
     const denseMotion = 0.18 + ((controls.foregroundMotion ?? 1) * 0.82);
@@ -817,10 +819,10 @@ function UnifiedPointCloud({ data, controls }) {
       const orbSizeBoost = 1 + ((particle.inwardCycleArrival ?? 0) * ((controls.orbDotSize ?? 1) - 1));
       const phase = lerp(particle.phase, particle.coherentPhase ?? particle.phase, cohesion);
       const particleSpeed = lerp(particle.speed, particle.coherentSpeed ?? particle.speed, cohesion * 0.86);
-      const fieldX = Math.sin((particle.baseY * 0.009) + (elapsed * 0.2 * localSpeedScale) + phase) * particle.amplitude * 1.12 * controls.fieldAmount * localMotionScale;
-      const fieldY = Math.cos((particle.baseX * 0.008) - (elapsed * 0.18 * localSpeedScale) + (phase * 0.7)) * particle.amplitude * 1.12 * controls.fieldAmount * localMotionScale;
-      const driftX = Math.sin((elapsed * particleSpeed * localSpeedScale) + phase) * particle.amplitude * 1.55 * controls.driftAmount * localMotionScale;
-      const driftY = Math.cos((elapsed * (particleSpeed * 0.9) * localSpeedScale) + (phase * 1.31)) * particle.amplitude * 1.55 * controls.driftAmount * localMotionScale;
+      const fieldX = Math.sin((particle.baseY * 0.009) + (elapsed * 0.2 * localSpeedScale) + phase) * particle.amplitude * 1.12 * controls.fieldAmount * localMotionScale * lateralMotionScale;
+      const fieldY = Math.cos((particle.baseX * 0.008) - (elapsed * 0.18 * localSpeedScale) + (phase * 0.7)) * particle.amplitude * 1.12 * controls.fieldAmount * localMotionScale * lateralMotionScale;
+      const driftX = Math.sin((elapsed * particleSpeed * localSpeedScale) + phase) * particle.amplitude * 1.55 * controls.driftAmount * localMotionScale * lateralMotionScale;
+      const driftY = Math.cos((elapsed * (particleSpeed * 0.9) * localSpeedScale) + (phase * 1.31)) * particle.amplitude * 1.55 * controls.driftAmount * localMotionScale * lateralMotionScale;
       const ambientHover = (particle.hoverRadius ?? (1.6 + ((1 - visualConcentration) * 3.8))) * controls.hoverAmount * localMotionScale;
       const hoverSpeed = lerp(particle.hoverSpeed ?? 0.22, 0.22 + (backgroundMix * 0.06), cohesion * 0.72) * localSpeedScale;
       const hoverWave = Math.sin((elapsed * hoverSpeed) + (phase * 0.8));
@@ -834,15 +836,16 @@ function UnifiedPointCloud({ data, controls }) {
       const hoverX = lerp(freeHoverX, spacedHoverX, spacingCoherence);
       const hoverY = lerp(freeHoverY, spacedHoverY, spacingCoherence);
       const swayRadius = ambientHover * 0.46 * controls.swayAmount;
-      const swayX = Math.cos((elapsed * ((hoverSpeed * 0.7) + 0.08)) + (phase * 1.9)) * swayRadius;
-      const swayY = Math.sin((elapsed * ((hoverSpeed * 0.62) + 0.06)) + (phase * 1.4)) * swayRadius;
+      const swayX = Math.cos((elapsed * ((hoverSpeed * 0.7) + 0.08)) + (phase * 1.9)) * swayRadius * lateralMotionScale;
+      const swayY = Math.sin((elapsed * ((hoverSpeed * 0.62) + 0.06)) + (phase * 1.4)) * swayRadius * lateralMotionScale;
       const tideRadius = ambientHover * 0.26 * controls.tideAmount;
-      const tideX = Math.sin((particle.baseY * 0.0028) + (elapsed * 0.12 * localSpeedScale) + (phase * 0.35)) * tideRadius;
-      const tideY = Math.cos((particle.baseX * 0.0025) - (elapsed * 0.11 * localSpeedScale) + (phase * 0.42)) * tideRadius;
+      const tideX = Math.sin((particle.baseY * 0.0028) + (elapsed * 0.12 * localSpeedScale) + (phase * 0.35)) * tideRadius * lateralMotionScale;
+      const tideY = Math.cos((particle.baseX * 0.0025) - (elapsed * 0.11 * localSpeedScale) + (phase * 0.42)) * tideRadius * lateralMotionScale;
       let x = particle.baseX + driftX + fieldX + hoverX + swayX + tideX;
       let y = particle.baseY + driftY + fieldY + hoverY + swayY + tideY;
       let size = particle.size * sizeScale * orbSizeBoost;
       let alpha = particle.alpha;
+      let travelSizeScale = 1;
 
       if ((particle.inwardCycleSpan ?? 0) > 0.001) {
         const inwardPhase = lerpCycle(
@@ -866,7 +869,9 @@ function UnifiedPointCloud({ data, controls }) {
         const nearOrbGuard = particle.inwardCycleNearOrb ?? 0;
         const edgeMask = particle.inwardCycleEdgeMask ?? 0;
         const travelT = 1 - Math.pow(1 - loop, 1.28);
-        const pathStart = (-(outer * 0.72) - (source * 0.18)) * (1 - nearOrbGuard);
+        const denseTraveler = smoothstep(0.44, 0.92, visualConcentration) * (1 - orbLoopMask);
+        const rawPathStart = (-(outer * 0.72) - (source * 0.18)) * (1 - nearOrbGuard);
+        const pathStart = lerp(rawPathStart, 0, 0.84 + (denseTraveler * 0.16));
         const pathEnd = arrival + (merge * 0.42);
         let pathPosition = lerp(pathStart, pathEnd, travelT);
         let arcT = Math.sin(travelT * Math.PI);
@@ -885,7 +890,11 @@ function UnifiedPointCloud({ data, controls }) {
           arcT = lerp(arcT, Math.sin(orbTravelT * Math.PI) * 0.12, orbLoopMask * 0.28);
         }
 
-        const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl;
+        const edgeAbsorb = smoothstep(0.88, 1, travelT) * edgeMask * (1 - orbLoopMask);
+        const carriedSize = lerp(1, 0.58, denseTraveler * smoothstep(0.18, 0.82, travelT) * (1 - edgeMask));
+        travelSizeScale *= carriedSize * lerp(1, 0.12, edgeAbsorb);
+
+        const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
 
         x += (particle.inwardCycleX * pathPosition) + (particle.inwardCycleNormalX * arc);
         y += (particle.inwardCycleY * pathPosition) + (particle.inwardCycleNormalY * arc);
@@ -900,11 +909,15 @@ function UnifiedPointCloud({ data, controls }) {
           + (Math.sin((livingT * 0.63) + livingPhase) * particle.livingRadiusY * 0.28);
         const localY = (Math.sin(livingT * 0.92) * particle.livingRadiusY)
           + (Math.cos((livingT * 0.57) + livingPhase) * particle.livingRadiusX * 0.2);
+        const parallelX = particle.inwardCycleX * Math.sin((livingT * 0.78) + livingPhase) * particle.livingRadiusX * 0.58;
+        const parallelY = particle.inwardCycleY * Math.sin((livingT * 0.78) + livingPhase) * particle.livingRadiusX * 0.58;
         const tangentPulse = Math.sin((livingT * 0.41) + livingPhase) * particle.livingTangentAmount;
         const pulse = Math.sin((livingT * 0.73) + livingPhase) * particle.livingPulse;
+        const spacedLocalX = lerp(localX, parallelX, spacingCoherence * 0.58);
+        const spacedLocalY = lerp(localY, parallelY, spacingCoherence * 0.58);
 
-        x += (localX + (particle.livingTangentX * tangentPulse)) * livingScale;
-        y += (localY + (particle.livingTangentY * tangentPulse)) * livingScale;
+        x += (spacedLocalX + (particle.livingTangentX * tangentPulse * lateralMotionScale)) * livingScale;
+        y += (spacedLocalY + (particle.livingTangentY * tangentPulse * lateralMotionScale)) * livingScale;
         size *= 1 + pulse;
       }
 
@@ -924,9 +937,11 @@ function UnifiedPointCloud({ data, controls }) {
           + (Math.sin((microT * 0.47) + microPhase) * particle.microRadiusY * 0.34);
         const microY = (Math.sin(microT * 0.88) * particle.microRadiusY)
           + (Math.cos((microT * 0.53) + microPhase) * particle.microRadiusX * 0.28);
+        const microParallelX = particle.inwardCycleX * Math.sin((microT * 0.74) + microPhase) * particle.microRadiusX * 0.48;
+        const microParallelY = particle.inwardCycleY * Math.sin((microT * 0.74) + microPhase) * particle.microRadiusX * 0.48;
 
-        x += microX * microScale;
-        y += microY * microScale;
+        x += lerp(microX, microParallelX, spacingCoherence * 0.62) * microScale;
+        y += lerp(microY, microParallelY, spacingCoherence * 0.62) * microScale;
       }
 
       if ((particle.aliveRadius ?? 0) > 0.001) {
@@ -938,16 +953,16 @@ function UnifiedPointCloud({ data, controls }) {
         const aliveRadius = particle.aliveRadius * aliveScale;
 
         x += (particle.aliveDriftX * aliveWave * aliveRadius)
-          + (particle.inwardCycleNormalX * aliveCross * aliveRadius * 0.24);
+          + (particle.inwardCycleNormalX * aliveCross * aliveRadius * 0.24 * lateralMotionScale);
         y += (particle.aliveDriftY * aliveWave * aliveRadius)
-          + (particle.inwardCycleNormalY * aliveCross * aliveRadius * 0.24);
+          + (particle.inwardCycleNormalY * aliveCross * aliveRadius * 0.24 * lateralMotionScale);
       }
 
       positions[index * 3] = x;
       positions[(index * 3) + 1] = y;
       positions[(index * 3) + 2] = 0;
-      sizes[index] = size;
-      alphas[index] = 1;
+      sizes[index] = size * travelSizeScale;
+      alphas[index] = alpha;
     }
 
     geometry.attributes.position.needsUpdate = true;
