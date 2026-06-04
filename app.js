@@ -14,17 +14,17 @@ const MAX_SAMPLE_SIDE = 1400;
 const MIN_PARTICLE_STEP = 1.9;
 const MAX_PARTICLE_STEP = 3.6;
 const MOTION_CONTROLS = {
-  globalMotion: 0.49,
-  globalSpeed: 1.34,
-  inwardFlow: 1,
+  globalMotion: 0,
+  globalSpeed: 0.2,
+  inwardFlow: 0.04,
   flowSpeed: 1,
-  flowDistance: 1,
-  respawnSpread: 1,
-  mergeReach: 1,
-  flowArc: 1,
+  flowDistance: 0.35,
+  respawnSpread: 0.8,
+  mergeReach: 0.91,
+  flowArc: 1.46,
   waveFlow: 0,
-  localMotion: 1,
-  localSpeed: 1,
+  localMotion: 1.12,
+  localSpeed: 1.35,
   backgroundMotion: 1.36,
   foregroundMotion: 1.14,
   backgroundSpeed: 0.92,
@@ -33,7 +33,7 @@ const MOTION_CONTROLS = {
   driftAmount: 0.2,
   hoverAmount: 0.16,
   swayAmount: 0.22,
-  tideAmount: 0.34,
+  tideAmount: 0.81,
   globalDotSize: 1.8,
   backgroundDotSize: 1.08,
   foregroundDotSize: 0.6,
@@ -41,9 +41,12 @@ const MOTION_CONTROLS = {
   orbSolidFill: 1,
   dotProtection: 1.8,
   hoverSpacing: 1.2,
+  denseExitShrink: 1,
   motionCohesion: 1.12,
   foregroundCircleAmount: 2.5,
   sunPointPopulation: 3,
+  backgroundColor: "#050505",
+  dotColor: "#d9fce8",
 };
 const GENERATION_CONTROL_KEYS = ["foregroundCircleAmount", "sunPointPopulation", "dotProtection"];
 const SUPPRESSED_ORB_MASKS = [
@@ -116,11 +119,16 @@ const CONTROL_GROUPS = [
       { key: "orbSolidFill", label: "Orb solid fill", min: 0, max: 1, step: 0.01 },
       { key: "dotProtection", label: "Dot protection", min: 0, max: 1.8, step: 0.01 },
       { key: "hoverSpacing", label: "Dot spacing", min: 0, max: 1.8, step: 0.01 },
+      { key: "denseExitShrink", label: "Dense exit shrink", min: 0, max: 1.4, step: 0.01 },
       { key: "motionCohesion", label: "Motion cohesion", min: 0, max: 1.8, step: 0.01 },
       { key: "foregroundCircleAmount", label: "Field density", min: 0.5, max: 2.5, step: 0.01 },
       { key: "sunPointPopulation", label: "Orb density", min: 0.5, max: 3, step: 0.01 },
     ],
   },
+];
+const COLOR_CONTROLS = [
+  { key: "backgroundColor", label: "Background" },
+  { key: "dotColor", label: "Dots / orb" },
 ];
 
 const DOT_FRAGMENT_SHADER = `
@@ -159,6 +167,26 @@ const SIMPLE_VERTEX_SHADER = `
   }
 `;
 
+const SOLID_ORB_VERTEX_SHADER = `
+  precision highp float;
+
+  void main() {
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const SOLID_ORB_FRAGMENT_SHADER = `
+  precision highp float;
+
+  uniform vec3 uColor;
+  uniform float uAlpha;
+
+  void main() {
+    gl_FragColor = vec4(uColor, uAlpha);
+  }
+`;
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -180,6 +208,10 @@ function lerpCycle(start, end, t) {
 
 function formatControlValue(value) {
   return Number(value).toFixed(2);
+}
+
+function isHexColor(value) {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
 function pickGenerationControls(controls) {
@@ -436,7 +468,32 @@ function detectPrimaryMass(particles) {
   };
 }
 
-function addLivingMotionProperties(store, focus) {
+function getOffscreenDistanceFromPoint(x, y, directionX, directionY, width, height, margin) {
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const distances = [];
+
+  if (Math.abs(directionX) > 0.0001) {
+    distances.push(directionX > 0
+      ? ((halfWidth + margin) - x) / directionX
+      : ((-halfWidth - margin) - x) / directionX);
+  }
+
+  if (Math.abs(directionY) > 0.0001) {
+    distances.push(directionY > 0
+      ? ((halfHeight + margin) - y) / directionY
+      : ((-halfHeight - margin) - y) / directionY);
+  }
+
+  const positiveDistances = distances.filter((distance) => distance > 0);
+  const exitDistance = positiveDistances.length > 0 ? Math.min(...positiveDistances) : margin;
+
+  return exitDistance + margin;
+}
+
+function addLivingMotionProperties(store, focus, width, height) {
+  const offscreenMargin = Math.max(18, focus.radius * 0.18);
+
   for (const particle of store.particles) {
     const dx = particle.baseX - focus.x;
     const dy = particle.baseY - focus.y;
@@ -449,8 +506,21 @@ function addLivingMotionProperties(store, focus) {
     const sparseField = clamp(1 - particle.concentration, 0, 1);
     const toFocusX = -dx / focusDistance;
     const toFocusY = -dy / focusDistance;
+    const outwardX = dx / focusDistance;
+    const outwardY = dy / focusDistance;
     const pathNoise = hash01(particle.baseX, particle.baseY, 8101);
     const distanceToOrbEdge = Math.max(0, focusDistance - (focus.radius * 0.9));
+    const offscreenDistance = getOffscreenDistanceFromPoint(
+      particle.baseX,
+      particle.baseY,
+      outwardX,
+      outwardY,
+      width,
+      height,
+      offscreenMargin * (0.84 + (pathNoise * 0.32))
+    );
+    const fullArrivalDistance = Math.max(0, focusDistance - (focus.radius * 0.7))
+      + (focus.radius * (0.16 + (hash01(particle.baseX, particle.baseY, 8107) * 0.08)));
     const localConveyorSpan = (
       (fieldMask * (9 + (sparseField * 17) + (particle.concentration * 7) + (clamp(distanceToOrbEdge, 0, focus.radius * 2.6) * 0.032)))
         + (lowerOrbTexture * 4.6)
@@ -518,6 +588,8 @@ function addLivingMotionProperties(store, focus) {
     particle.inwardCycleOrbMask = orbMask;
     particle.inwardCycleNearOrb = smoothstep(focus.radius * 1.28, focus.radius * 0.84, focusDistance);
     particle.inwardCycleEdgeMask = smoothstep(focus.radius * 1.52, focus.radius * 0.98, focusDistance);
+    particle.inwardCycleOffscreen = (fieldMask * offscreenDistance) + (lowerOrbTexture * 3.2) + (topSolidMask * 1.2);
+    particle.inwardCycleToOrb = (fieldMask * fullArrivalDistance) + (lowerOrbTexture * 5.8) + (topSolidMask * 1.8);
     particle.inwardCycleOuter = (
       localConveyorSpan * (0.88 + (hash01(particle.baseX, particle.baseY, 8213) * 0.22))
     ) + (
@@ -691,7 +763,7 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
   }
 
   const focus = getPrimaryOrbWorld(width, height);
-  addLivingMotionProperties(store, focus);
+  addLivingMotionProperties(store, focus, width, height);
 
   const finalized = finalizeParticleStore(store);
   finalized.focus = focus;
@@ -775,6 +847,12 @@ function UnifiedPointCloud({ data, controls }) {
     };
   }, [gl, material]);
 
+  useEffect(() => {
+    if (isHexColor(controls.dotColor)) {
+      material.uniforms.uColor.value.set(controls.dotColor);
+    }
+  }, [controls.dotColor, material]);
+
   useFrame((state) => {
     if (!pointsRef.current) {
       return;
@@ -798,6 +876,7 @@ function UnifiedPointCloud({ data, controls }) {
     const waveFlowControl = controls.waveFlow ?? 1;
     const dotProtectionControl = clamp(controls.dotProtection ?? 0, 0, 1.8);
     const hoverSpacingControl = clamp(controls.hoverSpacing ?? 1.2, 0, 1.8);
+    const denseExitShrinkControl = clamp(controls.denseExitShrink ?? 1, 0, 1.4);
     const spacingCoherence = clamp(hoverSpacingControl / 1.8, 0, 1);
     const protectionMotionScale = 1 - clamp(dotProtectionControl * 0.1, 0, 0.18);
     const spacingMotionScale = 1 - clamp(hoverSpacingControl * 0.14, 0, 0.24);
@@ -816,7 +895,8 @@ function UnifiedPointCloud({ data, controls }) {
       const localMotionScale = motionScale * localMotionControl * protectionMotionScale * spacingMotionScale;
       const localSpeedScale = speedScale * localSpeedControl;
       const sizeScale = controls.globalDotSize * lerp(controls.foregroundDotSize, controls.backgroundDotSize, backgroundMix);
-      const orbSizeBoost = 1 + ((particle.inwardCycleArrival ?? 0) * ((controls.orbDotSize ?? 1) - 1));
+      const orbInteriorSize = smoothstep(0.62, 0.94, particle.inwardCycleOrbMask ?? 0);
+      const orbSizeBoost = 1 + (orbInteriorSize * ((controls.orbDotSize ?? 1) - 1));
       const phase = lerp(particle.phase, particle.coherentPhase ?? particle.phase, cohesion);
       const particleSpeed = lerp(particle.speed, particle.coherentSpeed ?? particle.speed, cohesion * 0.86);
       const fieldX = Math.sin((particle.baseY * 0.009) + (elapsed * 0.2 * localSpeedScale) + phase) * particle.amplitude * 1.12 * controls.fieldAmount * localMotionScale * lateralMotionScale;
@@ -866,13 +946,22 @@ function UnifiedPointCloud({ data, controls }) {
         const arrival = (particle.inwardCycleArrivalSpan ?? (particle.inwardCycleSpan * 0.38)) * motionAmount * flowDistanceControl;
         const merge = (particle.inwardCycleMerge ?? 3.2) * motionAmount * mergeReachControl;
         const orbLoopMask = particle.inwardCycleOrbMask ?? 0;
-        const nearOrbGuard = particle.inwardCycleNearOrb ?? 0;
         const edgeMask = particle.inwardCycleEdgeMask ?? 0;
         const travelT = 1 - Math.pow(1 - loop, 1.28);
         const denseTraveler = smoothstep(0.44, 0.92, visualConcentration) * (1 - orbLoopMask);
-        const rawPathStart = (-(outer * 0.72) - (source * 0.18)) * (1 - nearOrbGuard);
-        const pathStart = lerp(rawPathStart, 0, 0.84 + (denseTraveler * 0.16));
-        const pathEnd = arrival + (merge * 0.42);
+        const offscreen = Math.max(
+          outer + (source * 0.35),
+          particle.inwardCycleOffscreen ?? (outer + source)
+        ) * (0.74 + (respawnSpreadControl * 0.26));
+        const fullArrival = (particle.inwardCycleToOrb ?? arrival)
+          * motionAmount
+          * (0.92 + (flowDistanceControl * 0.18));
+        const orbStaticMask = smoothstep(0.34, 0.82, orbLoopMask);
+        const activeFlowMask = 1 - orbStaticMask;
+        const pathStart = lerp(-offscreen, 0, orbStaticMask);
+        const fieldPathEnd = fullArrival + (merge * 0.62);
+        const pathEnd = lerp(fieldPathEnd, 0, orbStaticMask);
+        const baseCrossT = clamp((-pathStart) / Math.max(0.0001, pathEnd - pathStart), 0, 1);
         let pathPosition = lerp(pathStart, pathEnd, travelT);
         let arcT = Math.sin(travelT * Math.PI);
 
@@ -882,17 +971,16 @@ function UnifiedPointCloud({ data, controls }) {
           arcT *= lerp(1, 0.32, edgeMask);
         }
 
-        if (orbLoopMask > 0.5) {
-          const orbTravelT = (Math.sin(rawCycle * Math.PI * 2) * 0.5) + 0.5;
-          const orbPulse = smoothstep(0, 1, orbTravelT);
+        pathPosition *= activeFlowMask;
+        arcT *= activeFlowMask;
 
-          pathPosition = lerp(pathPosition, arrival * 0.34 * orbPulse, orbLoopMask * 0.22);
-          arcT = lerp(arcT, Math.sin(orbTravelT * Math.PI) * 0.12, orbLoopMask * 0.28);
-        }
-
-        const edgeAbsorb = smoothstep(0.88, 1, travelT) * edgeMask * (1 - orbLoopMask);
-        const carriedSize = lerp(1, 0.58, denseTraveler * smoothstep(0.18, 0.82, travelT) * (1 - edgeMask));
-        travelSizeScale *= carriedSize * lerp(1, 0.12, edgeAbsorb);
+        const entryScale = lerp(0.38, 1, smoothstep(0.012, Math.max(0.08, baseCrossT * 0.72), travelT));
+        const edgeAbsorb = smoothstep(0.92, 1, travelT) * edgeMask * (1 - orbLoopMask);
+        const approachCalm = smoothstep(0.42, 0.96, edgeMask) * smoothstep(0.55, 0.98, travelT) * activeFlowMask;
+        const denseExitAmount = clamp(denseExitShrinkControl / 1.4, 0, 1);
+        const denseExitT = smoothstep(baseCrossT, Math.min(0.98, baseCrossT + 0.48), travelT);
+        const denseExitScale = lerp(1, lerp(0.62, 0.24, denseExitAmount), denseTraveler * denseExitT * (1 - (edgeMask * 0.55)));
+        travelSizeScale *= lerp(entryScale, 1, orbStaticMask) * denseExitScale * lerp(1, 0.34, approachCalm) * lerp(1, 0.08, edgeAbsorb);
 
         const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
 
@@ -982,8 +1070,32 @@ function UnifiedPointCloud({ data, controls }) {
   `;
 }
 
-function SolidOrb({ orb, opacity }) {
+function SolidOrb({ orb, opacity, color }) {
   const visibleOpacity = clamp(opacity ?? 0, 0, 1);
+  const orbColor = isHexColor(color) ? color : MOTION_CONTROLS.dotColor;
+  const material = useMemo(() => new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    toneMapped: false,
+    uniforms: {
+      uColor: { value: new THREE.Color(orbColor) },
+      uAlpha: { value: visibleOpacity },
+    },
+    vertexShader: SOLID_ORB_VERTEX_SHADER,
+    fragmentShader: SOLID_ORB_FRAGMENT_SHADER,
+  }), []);
+
+  useEffect(() => {
+    material.uniforms.uColor.value.set(orbColor);
+    material.uniforms.uAlpha.value = visibleOpacity;
+  }, [material, orbColor, visibleOpacity]);
+
+  useEffect(() => {
+    return () => {
+      material.dispose();
+    };
+  }, [material]);
 
   if (!orb || visibleOpacity <= 0.001) {
     return null;
@@ -992,14 +1104,7 @@ function SolidOrb({ orb, opacity }) {
   return html`
     <mesh position=${[orb.x, orb.y, -0.6]} renderOrder=${0}>
       <circleGeometry args=${[orb.radius, 160]} />
-      <meshBasicMaterial
-        color="#f3ede2"
-        transparent=${true}
-        opacity=${visibleOpacity}
-        depthWrite=${false}
-        depthTest=${false}
-        toneMapped=${false}
-      />
+      <primitive object=${material} attach="material" />
     </mesh>
   `;
 }
@@ -1047,10 +1152,46 @@ function SettingsPanel({ controls, onChange, onReset }) {
         `)}
       </div>
 
+      <section className="color-group">
+        <h3>Colors</h3>
+        <div className="color-list">
+          ${COLOR_CONTROLS.map((item) => {
+            const colorValue = isHexColor(controls[item.key]) ? controls[item.key] : MOTION_CONTROLS[item.key];
+
+            return html`
+              <label className="color-row" key=${item.key}>
+                <span>${item.label}</span>
+                <span className="color-inputs">
+                  <input
+                    type="color"
+                    value=${colorValue}
+                    onInput=${(event) => onChange(item.key, event.currentTarget.value)}
+                    aria-label=${item.label}
+                  />
+                  <input
+                    type="text"
+                    value=${controls[item.key]}
+                    spellCheck=${false}
+                    onInput=${(event) => onChange(item.key, event.currentTarget.value)}
+                    aria-label=${`${item.label} hex`}
+                  />
+                </span>
+              </label>
+            `;
+          })}
+        </div>
+      </section>
+
       <section className="preset-box">
         <div className="preset-head">
           <h3>Preset</h3>
-          <span>Copy these values to send back</span>
+          <button
+            className="copy-button"
+            type="button"
+            onClick=${() => navigator.clipboard?.writeText(preset)}
+          >
+            Copy
+          </button>
         </div>
         <pre>${preset}</pre>
       </section>
@@ -1070,7 +1211,7 @@ function PointillismCanvas({ sceneData, controls }) {
       onCreated=${({ gl }) => gl.setClearColor(0x000000, 0)}
     >
       <${CameraBounds} width=${sceneData.width} height=${sceneData.height} />
-      <${SolidOrb} orb=${sceneData.stipple.primaryOrb} opacity=${controls.orbSolidFill} />
+      <${SolidOrb} orb=${sceneData.stipple.primaryOrb} opacity=${controls.orbSolidFill} color=${controls.dotColor} />
       <${UnifiedPointCloud} data=${sceneData.stipple} controls=${controls} />
     </${Canvas}>
   `;
@@ -1160,7 +1301,14 @@ function App() {
 
       <section className="workspace">
         <div className="stage-shell">
-          <div className="stage" style=${{ aspectRatio: sceneData ? sceneData.aspectRatio : DEFAULT_ASPECT_RATIO }}>
+          <div
+            className="stage"
+            style=${{
+              aspectRatio: sceneData ? sceneData.aspectRatio : DEFAULT_ASPECT_RATIO,
+              "--stage-top": isHexColor(controls.backgroundColor) ? controls.backgroundColor : MOTION_CONTROLS.backgroundColor,
+              "--stage-bottom": isHexColor(controls.backgroundColor) ? controls.backgroundColor : MOTION_CONTROLS.backgroundColor,
+            }}
+          >
             ${sceneData ? html`<${PointillismCanvas} sceneData=${sceneData} controls=${controls} />` : null}
             ${status === "error"
               ? html`

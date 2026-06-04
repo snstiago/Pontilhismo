@@ -247,8 +247,65 @@ body {
   accent-color: #f3ede2;
 }
 
+.color-group {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(255, 246, 231, 0.08);
+}
+
+.color-group h3 {
+  margin: 0 0 8px;
+  font-size: 0.86rem;
+  letter-spacing: 0.02em;
+}
+
+.color-list {
+  display: grid;
+  gap: 8px;
+}
+
+.color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.color-inputs {
+  display: grid;
+  grid-template-columns: 34px minmax(88px, 8rem);
+  gap: 8px;
+  align-items: center;
+}
+
+.color-inputs input[type="color"] {
+  width: 34px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 246, 231, 0.16);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.color-inputs input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  padding: 0.34rem 0.45rem;
+  border: 1px solid rgba(255, 246, 231, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.74rem;
+}
+
 .preset-box {
-  display: none;
+  display: block;
   margin-top: 10px;
   padding: 10px;
   border-radius: 14px;
@@ -268,9 +325,20 @@ body {
   font-size: 0.96rem;
 }
 
-.preset-head span {
-  color: var(--text-soft);
-  font-size: 0.78rem;
+.copy-button {
+  appearance: none;
+  border: 1px solid rgba(255, 246, 231, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  border-radius: 999px;
+  padding: 0.32rem 0.62rem;
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.copy-button:hover {
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .preset-box pre {
