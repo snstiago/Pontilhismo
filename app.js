@@ -975,12 +975,10 @@ function UnifiedPointCloud({ data, controls }) {
         arcT *= activeFlowMask;
 
         const entryScale = lerp(0.38, 1, smoothstep(0.012, Math.max(0.08, baseCrossT * 0.72), travelT));
-        const edgeAbsorb = smoothstep(0.92, 1, travelT) * edgeMask * (1 - orbLoopMask);
-        const approachCalm = smoothstep(0.42, 0.96, edgeMask) * smoothstep(0.55, 0.98, travelT) * activeFlowMask;
         const denseExitAmount = clamp(denseExitShrinkControl / 1.4, 0, 1);
         const denseExitT = smoothstep(baseCrossT, Math.min(0.98, baseCrossT + 0.48), travelT);
         const denseExitScale = lerp(1, lerp(0.62, 0.24, denseExitAmount), denseTraveler * denseExitT * (1 - (edgeMask * 0.55)));
-        travelSizeScale *= lerp(entryScale, 1, orbStaticMask) * denseExitScale * lerp(1, 0.34, approachCalm) * lerp(1, 0.08, edgeAbsorb);
+        travelSizeScale *= lerp(entryScale, 1, orbStaticMask) * denseExitScale;
 
         const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
 
@@ -1049,7 +1047,16 @@ function UnifiedPointCloud({ data, controls }) {
       positions[index * 3] = x;
       positions[(index * 3) + 1] = y;
       positions[(index * 3) + 2] = 0;
-      sizes[index] = size * travelSizeScale;
+      const orb = data.primaryOrb;
+      const renderedOrbDistance = orb ? Math.hypot(x - orb.x, y - orb.y) : 9999;
+      const renderedOrbEdge = orb ? renderedOrbDistance / orb.radius : 9999;
+      const enteringSolidOrb = smoothstep(0.82, 0.62, renderedOrbEdge);
+      const contactMelt = smoothstep(1.05, 0.98, renderedOrbEdge) * (1 - smoothstep(0.95, 0.86, renderedOrbEdge));
+      const mergeVisibility = 1 - ((controls.orbSolidFill ?? 0) * enteringSolidOrb);
+      const finalSize = size * travelSizeScale * (1 + (contactMelt * 0.12));
+      const journeySizeFloor = controls.globalDotSize * lerp(0.44, 0, enteringSolidOrb);
+
+      sizes[index] = Math.max(finalSize, journeySizeFloor) * mergeVisibility;
       alphas[index] = alpha;
     }
 
@@ -1059,7 +1066,7 @@ function UnifiedPointCloud({ data, controls }) {
   });
 
   return html`
-    <points ref=${pointsRef} frustumCulled=${false} renderOrder=${1}>
+    <points ref=${pointsRef} frustumCulled=${false} renderOrder=${2}>
       <bufferGeometry>
         <bufferAttribute attach="attributes-position" args=${[data.positions, 3]} />
         <bufferAttribute attach="attributes-aSize" args=${[data.sizes, 1]} />
@@ -1102,7 +1109,7 @@ function SolidOrb({ orb, opacity, color }) {
   }
 
   return html`
-    <mesh position=${[orb.x, orb.y, -0.6]} renderOrder=${0}>
+    <mesh position=${[orb.x, orb.y, -0.6]} renderOrder=${1}>
       <circleGeometry args=${[orb.radius, 160]} />
       <primitive object=${material} attach="material" />
     </mesh>
