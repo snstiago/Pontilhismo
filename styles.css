@@ -25,60 +25,62 @@ body {
 }
 
 body {
-  padding: clamp(18px, 3vw, 42px);
+  padding: clamp(10px, 1.2vw, 22px);
 }
 
 #root {
-  min-height: calc(100vh - clamp(36px, 6vw, 84px));
+  min-height: calc(100vh - clamp(20px, 2.4vw, 44px));
 }
 
 .page {
-  width: min(1520px, 100%);
+  width: min(1920px, 100%);
   margin: 0 auto;
   display: grid;
-  gap: clamp(16px, 2vw, 22px);
+  gap: clamp(8px, 1vw, 14px);
 }
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: clamp(16px, 2vw, 22px);
+  grid-template-columns: 1fr;
+  gap: clamp(8px, 0.8vw, 12px);
   align-items: start;
 }
 
 .header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 34rem);
-  gap: 16px 28px;
-  align-items: end;
+  grid-template-columns: minmax(260px, auto) minmax(280px, 42rem);
+  gap: 8px 20px;
+  align-items: center;
 }
 
 .eyebrow {
-  margin: 0 0 10px;
+  margin: 0 0 4px;
   text-transform: uppercase;
   letter-spacing: 0.16em;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: var(--text-soft);
 }
 
 .header h1 {
   margin: 0;
-  font-size: clamp(1.6rem, 3vw, 3rem);
-  line-height: 0.94;
-  max-width: 16ch;
+  font-size: clamp(1rem, 1.15vw, 1.32rem);
+  line-height: 1;
+  max-width: none;
   font-weight: 600;
 }
 
 .copy {
   margin: 0;
   color: var(--text-soft);
-  line-height: 1.55;
-  font-size: clamp(0.94rem, 1.2vw, 1.05rem);
+  line-height: 1.25;
+  font-size: clamp(0.72rem, 0.78vw, 0.84rem);
+  justify-self: end;
+  max-width: 42rem;
 }
 
 .stage-shell {
-  padding: clamp(12px, 1.8vw, 18px);
-  border-radius: 30px;
+  padding: clamp(8px, 0.8vw, 12px);
+  border-radius: 22px;
   background: linear-gradient(180deg, rgba(24, 24, 24, 0.95), rgba(8, 8, 8, 0.98));
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow);
@@ -88,7 +90,7 @@ body {
   position: relative;
   width: 100%;
   overflow: hidden;
-  border-radius: 22px;
+  border-radius: 16px;
   background:
     radial-gradient(circle at 50% 72%, rgba(255, 255, 255, 0.03), transparent 20%),
     radial-gradient(circle at 52% 76%, rgba(255, 255, 255, 0.018), transparent 34%),
@@ -142,12 +144,11 @@ body {
 }
 
 .controls-panel {
-  position: sticky;
-  top: 18px;
-  max-height: calc(100vh - 36px);
+  position: relative;
+  max-height: min(28vh, 260px);
   overflow: auto;
-  padding: 18px;
-  border-radius: 24px;
+  padding: 12px;
+  border-radius: 18px;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow);
@@ -171,15 +172,15 @@ body {
 
 .controls-header h2 {
   margin: 0;
-  font-size: 1.45rem;
+  font-size: 1.05rem;
   line-height: 1;
 }
 
 .controls-copy {
-  margin: 14px 0 0;
+  margin: 8px 0 0;
   color: var(--text-soft);
-  line-height: 1.5;
-  font-size: 0.95rem;
+  line-height: 1.35;
+  font-size: 0.78rem;
 }
 
 .ghost-button {
@@ -188,7 +189,7 @@ body {
   background: rgba(255, 255, 255, 0.03);
   color: var(--text-main);
   border-radius: 999px;
-  padding: 0.7rem 1rem;
+  padding: 0.45rem 0.7rem;
   font: inherit;
   cursor: pointer;
 }
@@ -199,31 +200,32 @@ body {
 
 .controls-groups {
   display: grid;
-  gap: 16px;
-  margin-top: 18px;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .control-group {
-  padding: 14px;
-  border-radius: 18px;
+  padding: 10px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.028);
   border: 1px solid rgba(255, 246, 231, 0.08);
 }
 
 .control-group h3 {
-  margin: 0 0 12px;
-  font-size: 0.96rem;
+  margin: 0 0 8px;
+  font-size: 0.86rem;
   letter-spacing: 0.02em;
 }
 
 .control-list {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .control-row {
   display: grid;
-  gap: 8px;
+  gap: 5px;
 }
 
 .control-meta {
@@ -231,13 +233,13 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 0.9rem;
+  font-size: 0.78rem;
   color: var(--text-soft);
 }
 
 .control-meta strong {
   color: var(--text-main);
-  font-size: 0.86rem;
+  font-size: 0.76rem;
 }
 
 .control-row input[type="range"] {
@@ -246,9 +248,10 @@ body {
 }
 
 .preset-box {
-  margin-top: 18px;
-  padding: 14px;
-  border-radius: 18px;
+  display: none;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.028);
   border: 1px solid rgba(255, 246, 231, 0.08);
 }
@@ -271,13 +274,13 @@ body {
 }
 
 .preset-box pre {
-  margin: 12px 0 0;
-  padding: 14px;
-  border-radius: 14px;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 10px;
   overflow: auto;
   background: rgba(0, 0, 0, 0.36);
   color: #f3ede2;
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   line-height: 1.45;
 }
 
@@ -287,7 +290,7 @@ body {
   }
 
   .header h1 {
-    max-width: 12ch;
+    max-width: none;
   }
 
   .workspace {
@@ -296,7 +299,11 @@ body {
 
   .controls-panel {
     position: static;
-    max-height: none;
+    max-height: 32vh;
+  }
+
+  .controls-groups {
+    grid-template-columns: 1fr;
   }
 }
 

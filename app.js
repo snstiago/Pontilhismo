@@ -13,37 +13,39 @@ const REFERENCE_HEIGHT = 744;
 const MAX_SAMPLE_SIDE = 1400;
 const MIN_PARTICLE_STEP = 1.9;
 const MAX_PARTICLE_STEP = 3.6;
-const MOVING_CLUSTER_GROUPS = 16;
-const MOVING_CLUSTER_MEMBERS_MIN = 24;
-const MOVING_CLUSTER_MEMBERS_MAX = 64;
 const MOTION_CONTROLS = {
   globalMotion: 0.49,
-  globalSpeed: 1.78,
-  backgroundMotion: 2.13,
-  foregroundMotion: 2,
-  backgroundSpeed: 1.08,
-  foregroundSpeed: 2.2,
-  fieldAmount: 1.42,
-  driftAmount: 1.06,
-  hoverAmount: 0.77,
-  swayAmount: 1.81,
-  tideAmount: 2,
-  globalDotSize: 1.09,
-  backgroundDotSize: 1.2,
-  foregroundDotSize: 0.83,
-  globalAlpha: 1,
-  backgroundAlpha: 0.95,
-  foregroundAlpha: 1.04,
-  clusterSpeed: 0.8,
-  clusterPull: 1.6,
-  clusterHover: 2.4,
-  clusterArc: 1,
-  clusterSize: 0.5,
-  clusterAlpha: 0.6,
-  foregroundCircleAmount: 1,
+  globalSpeed: 1.34,
+  inwardFlow: 1,
+  flowSpeed: 1,
+  flowDistance: 1,
+  respawnSpread: 1,
+  mergeReach: 1,
+  flowArc: 1,
+  waveFlow: 0,
+  localMotion: 1,
+  localSpeed: 1,
+  backgroundMotion: 1.36,
+  foregroundMotion: 1.14,
+  backgroundSpeed: 0.92,
+  foregroundSpeed: 1.12,
+  fieldAmount: 0.3,
+  driftAmount: 0.2,
+  hoverAmount: 0.16,
+  swayAmount: 0.22,
+  tideAmount: 0.34,
+  globalDotSize: 1.8,
+  backgroundDotSize: 1.08,
+  foregroundDotSize: 0.6,
+  orbDotSize: 1.8,
+  orbSolidFill: 1,
+  dotProtection: 1.8,
+  hoverSpacing: 1.2,
+  motionCohesion: 1.12,
+  foregroundCircleAmount: 2.5,
   sunPointPopulation: 3,
 };
-const GENERATION_CONTROL_KEYS = ["foregroundCircleAmount", "sunPointPopulation"];
+const GENERATION_CONTROL_KEYS = ["foregroundCircleAmount", "sunPointPopulation", "dotProtection"];
 const SUPPRESSED_ORB_MASKS = [
   { x: 248, y: 680, radius: 70 },
   { x: 520, y: 464, radius: 58 },
@@ -62,17 +64,41 @@ const SUPPRESSED_ORB_MASKS = [
   { x: 1232, y: 488, radius: 58 },
   { x: 1512, y: 536, radius: 62 },
 ];
-const SUN_PROTECT_MASK = { x: 890, y: 320, radius: 238 };
+const SUN_PROTECT_MASK = { x: 890, y: 300, radius: 207 };
+const BAYER_8 = [
+  0, 48, 12, 60, 3, 51, 15, 63,
+  32, 16, 44, 28, 35, 19, 47, 31,
+  8, 56, 4, 52, 11, 59, 7, 55,
+  40, 24, 36, 20, 43, 27, 39, 23,
+  2, 50, 14, 62, 1, 49, 13, 61,
+  34, 18, 46, 30, 33, 17, 45, 29,
+  10, 58, 6, 54, 9, 57, 5, 53,
+  42, 26, 38, 22, 41, 25, 37, 21,
+];
 const CONTROL_GROUPS = [
   {
-    title: "Motion",
+    title: "Flow",
     items: [
-      { key: "globalMotion", label: "Global motion", min: 0, max: 1.8, step: 0.01 },
-      { key: "globalSpeed", label: "Global speed", min: 0.2, max: 2, step: 0.01 },
-      { key: "backgroundMotion", label: "Background motion", min: 0, max: 2.4, step: 0.01 },
-      { key: "foregroundMotion", label: "Foreground motion", min: 0, max: 2, step: 0.01 },
-      { key: "backgroundSpeed", label: "Background speed", min: 0.2, max: 2.2, step: 0.01 },
-      { key: "foregroundSpeed", label: "Foreground speed", min: 0.2, max: 2.2, step: 0.01 },
+      { key: "globalMotion", label: "Overall motion", min: 0, max: 1.8, step: 0.01 },
+      { key: "globalSpeed", label: "Overall speed", min: 0.2, max: 2, step: 0.01 },
+      { key: "inwardFlow", label: "Inward pull", min: 0, max: 2.4, step: 0.01 },
+      { key: "flowSpeed", label: "Inward speed", min: 0.2, max: 2.4, step: 0.01 },
+      { key: "flowDistance", label: "Travel distance", min: 0.35, max: 2.2, step: 0.01 },
+      { key: "respawnSpread", label: "Respawn spread", min: 0.35, max: 2, step: 0.01 },
+      { key: "mergeReach", label: "Merge reach", min: 0, max: 2.4, step: 0.01 },
+      { key: "flowArc", label: "Flow arc", min: 0, max: 2.2, step: 0.01 },
+    ],
+  },
+  {
+    title: "Texture motion",
+    items: [
+      { key: "localMotion", label: "Local motion", min: 0, max: 2.2, step: 0.01 },
+      { key: "localSpeed", label: "Local speed", min: 0.2, max: 2.4, step: 0.01 },
+      { key: "waveFlow", label: "Wave flow", min: 0, max: 2.4, step: 0.01 },
+      { key: "backgroundMotion", label: "Sparse motion", min: 0, max: 2.4, step: 0.01 },
+      { key: "foregroundMotion", label: "Dense motion", min: 0, max: 2, step: 0.01 },
+      { key: "backgroundSpeed", label: "Sparse speed", min: 0.2, max: 2.2, step: 0.01 },
+      { key: "foregroundSpeed", label: "Dense speed", min: 0.2, max: 2.2, step: 0.01 },
       { key: "fieldAmount", label: "Field swirl", min: 0, max: 2.2, step: 0.01 },
       { key: "driftAmount", label: "Drift", min: 0, max: 2.4, step: 0.01 },
       { key: "hoverAmount", label: "Hover", min: 0, max: 2.4, step: 0.01 },
@@ -83,25 +109,16 @@ const CONTROL_GROUPS = [
   {
     title: "Dots",
     items: [
-      { key: "globalDotSize", label: "Global size", min: 0.5, max: 1.8, step: 0.01 },
-      { key: "backgroundDotSize", label: "Background size", min: 0.6, max: 2.8, step: 0.01 },
-      { key: "foregroundDotSize", label: "Foreground size", min: 0.6, max: 2.2, step: 0.01 },
-      { key: "globalAlpha", label: "Global alpha", min: 0.3, max: 1.8, step: 0.01 },
-      { key: "backgroundAlpha", label: "Background alpha", min: 0.3, max: 1.8, step: 0.01 },
-      { key: "foregroundAlpha", label: "Foreground alpha", min: 0.3, max: 1.8, step: 0.01 },
-      { key: "foregroundCircleAmount", label: "Foreground circle amount", min: 0.5, max: 2.5, step: 0.01 },
-      { key: "sunPointPopulation", label: "Sun point population", min: 0.5, max: 3, step: 0.01 },
-    ],
-  },
-  {
-    title: "Clusters",
-    items: [
-      { key: "clusterSpeed", label: "Cluster speed", min: 0.2, max: 2.2, step: 0.01 },
-      { key: "clusterPull", label: "Cluster pull", min: 0, max: 1.6, step: 0.01 },
-      { key: "clusterHover", label: "Cluster hover", min: 0, max: 2.4, step: 0.01 },
-      { key: "clusterArc", label: "Cluster arc", min: 0, max: 2.4, step: 0.01 },
-      { key: "clusterSize", label: "Cluster size", min: 0.5, max: 2, step: 0.01 },
-      { key: "clusterAlpha", label: "Cluster alpha", min: 0.4, max: 2, step: 0.01 },
+      { key: "globalDotSize", label: "Overall size", min: 0.5, max: 1.8, step: 0.01 },
+      { key: "backgroundDotSize", label: "Sparse size", min: 0.6, max: 2.8, step: 0.01 },
+      { key: "foregroundDotSize", label: "Dense size", min: 0.6, max: 2.2, step: 0.01 },
+      { key: "orbDotSize", label: "Orb size", min: 0.6, max: 1.8, step: 0.01 },
+      { key: "orbSolidFill", label: "Orb solid fill", min: 0, max: 1, step: 0.01 },
+      { key: "dotProtection", label: "Dot protection", min: 0, max: 1.8, step: 0.01 },
+      { key: "hoverSpacing", label: "Hover spacing", min: 0, max: 1.8, step: 0.01 },
+      { key: "motionCohesion", label: "Motion cohesion", min: 0, max: 1.8, step: 0.01 },
+      { key: "foregroundCircleAmount", label: "Field density", min: 0.5, max: 2.5, step: 0.01 },
+      { key: "sunPointPopulation", label: "Orb density", min: 0.5, max: 3, step: 0.01 },
     ],
   },
 ];
@@ -115,14 +132,13 @@ const DOT_FRAGMENT_SHADER = `
   void main() {
     vec2 centered = gl_PointCoord - 0.5;
     float radius = length(centered);
-    float mask = 1.0 - smoothstep(0.42, 0.5, radius);
-    float grain = 0.95 + (sin((centered.x + centered.y) * 18.0) * 0.05);
+    float mask = 1.0 - smoothstep(0.455, 0.5, radius);
 
     if (mask <= 0.001) {
       discard;
     }
 
-    gl_FragColor = vec4(uColor, vAlpha * mask * grain);
+    gl_FragColor = vec4(uColor, mask);
   }
 `;
 
@@ -156,24 +172,34 @@ function lerp(start, end, t) {
   return start + (end - start) * t;
 }
 
-function formatControlValue(value) {
-  return Number(value).toFixed(2);
+function lerpCycle(start, end, t) {
+  const delta = ((((end - start) + 0.5) % 1) + 1) % 1 - 0.5;
+
+  return (start + (delta * t) + 1) % 1;
 }
 
-function getEffectiveClusterPull(controls) {
-  return clamp(0.74 + (controls.clusterPull * 0.16), 0.74, 1);
+function formatControlValue(value) {
+  return Number(value).toFixed(2);
 }
 
 function pickGenerationControls(controls) {
   return {
     foregroundCircleAmount: controls.foregroundCircleAmount,
     sunPointPopulation: controls.sunPointPopulation,
+    dotProtection: controls.dotProtection,
   };
 }
 
 function hash01(a, b, seed = 0) {
   const value = Math.sin((a * 127.1) + (b * 311.7) + (seed * 74.7)) * 43758.5453123;
   return value - Math.floor(value);
+}
+
+function getStructuredThreshold(cellX, cellY, x, y) {
+  const ordered = (BAYER_8[((cellY & 7) * 8) + (cellX & 7)] + 0.5) / 64;
+  const wobble = hash01(x, y, 73);
+
+  return clamp((ordered * 0.93) + (wobble * 0.07), 0, 1);
 }
 
 function getSuppressedOrbMask(x, y, width, height) {
@@ -188,12 +214,66 @@ function getSuppressedOrbMask(x, y, width, height) {
   for (const orb of SUPPRESSED_ORB_MASKS) {
     const centerX = orb.x * scaleX;
     const centerY = orb.y * scaleY;
-    const radius = orb.radius * ((scaleX + scaleY) * 0.5);
+    const radius = orb.radius * ((scaleX + scaleY) * 0.5) * 0.68;
     const distance = Math.hypot(x - centerX, y - centerY);
-    mask = Math.max(mask, smoothstep(radius, radius * 0.36, distance));
+    mask = Math.max(mask, smoothstep(radius, radius * 0.58, distance));
   }
 
   return mask * (1 - sunProtection);
+}
+
+function getPrimaryOrbMask(x, y, width, height) {
+  const scaleX = width / REFERENCE_WIDTH;
+  const scaleY = height / REFERENCE_HEIGHT;
+  const centerX = SUN_PROTECT_MASK.x * scaleX;
+  const centerY = SUN_PROTECT_MASK.y * scaleY;
+  const radius = SUN_PROTECT_MASK.radius * ((scaleX + scaleY) * 0.5);
+  const distance = Math.hypot(x - centerX, y - centerY);
+
+  return smoothstep(radius * 1.02, radius * 0.72, distance);
+}
+
+function getPrimaryOrbProfile(x, y, width, height) {
+  const scaleX = width / REFERENCE_WIDTH;
+  const scaleY = height / REFERENCE_HEIGHT;
+  const centerX = SUN_PROTECT_MASK.x * scaleX;
+  const centerY = SUN_PROTECT_MASK.y * scaleY;
+  const radius = SUN_PROTECT_MASK.radius * ((scaleX + scaleY) * 0.5);
+  const distance = Math.hypot(x - centerX, y - centerY);
+  const mask = smoothstep(radius * 1.02, radius * 0.72, distance);
+  const vertical = (y - centerY) / radius;
+  const topSolid = mask * (1 - smoothstep(-0.26, 0.08, vertical));
+  const lowerTexture = mask * smoothstep(-0.18, 0.44, vertical);
+  const rim = mask * smoothstep(radius * 0.52, radius * 0.98, distance);
+
+  return { mask, topSolid, lowerTexture, rim };
+}
+
+function getPrimaryOrbWorld(width, height) {
+  const scaleX = width / REFERENCE_WIDTH;
+  const scaleY = height / REFERENCE_HEIGHT;
+  const centerX = SUN_PROTECT_MASK.x * scaleX;
+  const centerY = SUN_PROTECT_MASK.y * scaleY;
+  const radius = SUN_PROTECT_MASK.radius * ((scaleX + scaleY) * 0.5);
+
+  return {
+    x: centerX - (width / 2),
+    y: (height / 2) - centerY,
+    radius,
+  };
+}
+
+function getContinuityFloor(x, y, width, height) {
+  const lowerField = smoothstep(height * 0.43, height * 0.96, y);
+  const horizonField = smoothstep(height * 0.68, height * 0.28, y)
+    * smoothstep(width * 0.06, width * 0.36, x)
+    * (1 - smoothstep(width * 0.86, width * 1.02, x));
+  const grain = hash01(x, y, 4361) - 0.5;
+
+  return {
+    brightness: clamp(0.012 + (lowerField * 0.16) + (horizonField * 0.04) + (grain * 0.004), 0, 0.24),
+    concentration: clamp(0.018 + (lowerField * 0.155) + (horizonField * 0.034) + (grain * 0.004), 0, 0.24),
+  };
 }
 
 function readBrightness(pixels, width, x, y) {
@@ -226,6 +306,45 @@ function readLocalBrightnessAverage(pixels, width, x, y, spread) {
   return center + axial + diagonal;
 }
 
+function readSoftBrightnessGuide(pixels, width, x, y, spread) {
+  const near = spread * 2.4;
+  const far = spread * 6.4;
+  const wide = spread * 12;
+  const center = readBrightness(pixels, width, x, y) * 0.2;
+  const nearAxial = (
+    readBrightness(pixels, width, x - near, y) +
+    readBrightness(pixels, width, x + near, y) +
+    readBrightness(pixels, width, x, y - near) +
+    readBrightness(pixels, width, x, y + near)
+  ) * 0.09;
+  const nearDiagonal = (
+    readBrightness(pixels, width, x - near, y - near) +
+    readBrightness(pixels, width, x + near, y - near) +
+    readBrightness(pixels, width, x - near, y + near) +
+    readBrightness(pixels, width, x + near, y + near)
+  ) * 0.046;
+  const farAxial = (
+    readBrightness(pixels, width, x - far, y) +
+    readBrightness(pixels, width, x + far, y) +
+    readBrightness(pixels, width, x, y - far) +
+    readBrightness(pixels, width, x, y + far)
+  ) * 0.034;
+  const farDiagonal = (
+    readBrightness(pixels, width, x - far, y - far) +
+    readBrightness(pixels, width, x + far, y - far) +
+    readBrightness(pixels, width, x - far, y + far) +
+    readBrightness(pixels, width, x + far, y + far)
+  ) * 0.018;
+  const wideAxial = (
+    readBrightness(pixels, width, x - wide, y) +
+    readBrightness(pixels, width, x + wide, y) +
+    readBrightness(pixels, width, x, y - wide) +
+    readBrightness(pixels, width, x, y + wide)
+  ) * 0.006;
+
+  return center + nearAxial + nearDiagonal + farAxial + farDiagonal + wideAxial;
+}
+
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -250,7 +369,6 @@ function createParticleStore() {
     positions: [],
     sizes: [],
     alphas: [],
-    clusterGroups: [],
   };
 }
 
@@ -269,7 +387,6 @@ function finalizeParticleStore(store) {
     positions: new Float32Array(store.positions),
     sizes: new Float32Array(store.sizes),
     alphas: new Float32Array(store.alphas),
-    clusterGroups: store.clusterGroups,
   };
 }
 
@@ -319,390 +436,206 @@ function detectPrimaryMass(particles) {
   };
 }
 
-function removeStaticClusterSource(particle, seed, spread = 18) {
-  const angle = hash01(particle.baseX, particle.baseY, 1047 + seed) * Math.PI * 2;
-  const radius = Math.sqrt(hash01(particle.baseX, particle.baseY, 1059 + seed)) * spread;
+function addLivingMotionProperties(store, focus) {
+  for (const particle of store.particles) {
+    const dx = particle.baseX - focus.x;
+    const dy = particle.baseY - focus.y;
+    const focusDistance = Math.max(0.0001, Math.hypot(dx, dy));
+    const orbMask = smoothstep(focus.radius * 1.08, focus.radius * 0.72, focusDistance);
+    const fieldMask = 1 - orbMask;
+    const vertical = clamp(dy / focus.radius, -1, 1);
+    const topSolidMask = orbMask * smoothstep(-0.08, 0.48, vertical);
+    const lowerOrbTexture = orbMask * (1 - topSolidMask);
+    const sparseField = clamp(1 - particle.concentration, 0, 1);
+    const toFocusX = -dx / focusDistance;
+    const toFocusY = -dy / focusDistance;
+    const pathNoise = hash01(particle.baseX, particle.baseY, 8101);
+    const distanceToOrbEdge = Math.max(0, focusDistance - (focus.radius * 0.9));
+    const localConveyorSpan = (
+      (fieldMask * (9 + (sparseField * 17) + (particle.concentration * 7) + (clamp(distanceToOrbEdge, 0, focus.radius * 2.6) * 0.032)))
+        + (lowerOrbTexture * 4.6)
+        + (topSolidMask * 1.35)
+    ) * (0.78 + (pathNoise * 0.32));
+    const arrivalSpan = (
+      (fieldMask * clamp((distanceToOrbEdge * 0.34) + 12, 18, focus.radius * 1.24))
+        + (lowerOrbTexture * 5.4)
+        + (topSolidMask * 1.8)
+    ) * (0.82 + (hash01(particle.baseX, particle.baseY, 8111) * 0.28));
+    const inwardSpan = localConveyorSpan + arrivalSpan;
+    const upperWaveMask = fieldMask
+      * smoothstep(focus.y - (focus.radius * 1.85), focus.y + (focus.radius * 0.42), particle.baseY)
+      * smoothstep(focus.radius * 0.72, focus.radius * 3.8, focusDistance)
+      * (1 - smoothstep(focus.radius * 5.2, focus.radius * 6.4, focusDistance))
+      * (0.28 + (particle.concentration * 0.72));
+    const baseRadius = 0.34
+      + (topSolidMask * 0.14)
+      + (lowerOrbTexture * 0.34)
+      + (fieldMask * (0.44 + (sparseField * 0.8)));
+    const phaseSeed = hash01(particle.baseX, particle.baseY, 8123);
+    const tangentX = -dy / focusDistance;
+    const tangentY = dx / focusDistance;
+    const anglePhase = (Math.atan2(dy, dx) + Math.PI) / (Math.PI * 2);
+    const spatialWave = Math.sin((particle.baseX * 0.0042) - (particle.baseY * 0.0036)) * 0.7;
+    const coherentPhase = (particle.baseX * 0.0062) + (particle.baseY * 0.0048) + spatialWave;
+    const waveSide = dx < 0 ? -1 : 1;
+    const waveArcX = (-dy / focusDistance) * waveSide;
+    const waveArcY = (dx / focusDistance) * waveSide;
+    const waveX = (waveArcX * 0.92) + (toFocusX * 0.42);
+    const waveY = (waveArcY * 0.92) + (toFocusY * 0.24);
+    const waveLength = Math.max(0.0001, Math.hypot(waveX, waveY));
 
-  particle.sourceClusterBlend = true;
-  particle.sourceClusterBackground = true;
-  particle.sourceClusterConcentration = 0.08 + (hash01(particle.baseX, particle.baseY, 1033 + seed) * 0.12);
-  particle.sourceClusterAlpha = 0.045 + (hash01(particle.baseX, particle.baseY, 1039 + seed) * 0.055);
-  particle.sourceClusterSize = 0.22 + (hash01(particle.baseX, particle.baseY, 1051 + seed) * 0.12);
-  particle.sourceDissolveX = Math.cos(angle) * radius;
-  particle.sourceDissolveY = Math.sin(angle) * radius;
-  particle.sourceScatterRadius = 2.4 + (hash01(particle.baseX, particle.baseY, 1063 + seed) * 4.8);
-  particle.sourceScatterPhase = hash01(particle.baseX, particle.baseY, 1087 + seed) * Math.PI * 2;
-}
-
-function isProtectedReferenceMass(particle, focus) {
-  return particle.baseX > focus.x + (focus.radius * 1.45)
-    && particle.baseY < focus.y - (focus.radius * 0.45);
-}
-
-function addClusterDustFillers(store, anchor, radius, count, seed) {
-  for (let index = 0; index < count; index += 1) {
-    const angle = hash01(anchor.x, anchor.y, 2200 + seed + index) * Math.PI * 2;
-    const distance = Math.sqrt(hash01(anchor.x, anchor.y, 2300 + seed + index)) * radius;
-    const baseX = anchor.x + (Math.cos(angle) * distance);
-    const baseY = anchor.y + (Math.sin(angle) * distance);
-    const concentration = 0.05 + (hash01(baseX, baseY, 2400 + seed) * 0.08);
-
-    pushParticle(store, {
-      baseX,
-      baseY,
-      size: 0.52 + (hash01(baseX, baseY, 2600 + seed) * 0.42),
-      alpha: 0.12 + (hash01(baseX, baseY, 2500 + seed) * 0.2),
-      amplitude: 0.5 + (hash01(baseX, baseY, 2700 + seed) * 0.35),
-      hoverRadius: 3.8 + (hash01(baseX, baseY, 2800 + seed) * 2.8),
-      hoverSpeed: 0.18 + (hash01(baseX, baseY, 2900 + seed) * 0.16),
-      concentration,
-      generatedFill: true,
-      phase: hash01(baseX, baseY, 3000 + seed) * Math.PI * 2,
-      speed: 0.18 + (hash01(baseX, baseY, 3100 + seed) * 0.08),
-    });
-  }
-}
-
-function dissolveResidualSmallMasses(store, focus) {
-  for (let particleIndex = 0; particleIndex < store.particles.length; particleIndex += 1) {
-    const particle = store.particles[particleIndex];
-
-    if (particle.dynamicCluster || particle.generatedFill || particle.sourceClusterBlend) {
-      continue;
-    }
-
-    const distance = Math.hypot(particle.baseX - focus.x, particle.baseY - focus.y);
-
-    if (distance < focus.radius * 0.72 || isProtectedReferenceMass(particle, focus)) {
-      continue;
-    }
-
-    const foregroundSignal = (particle.concentration * 1.25) + (particle.alpha * 0.95) + (particle.size * 0.12);
-
-    if (particle.concentration < 0.08 && particle.alpha < 0.13 && particle.size < 1.15) {
-      continue;
-    }
-
-    if (foregroundSignal < 0.38) {
-      continue;
-    }
-
-    removeStaticClusterSource(particle, 4200 + particleIndex, focus.radius * 0.42);
-  }
-}
-
-function addMotionClusterCopies(store) {
-  const particles = store.particles;
-  const focus = detectPrimaryMass(particles);
-  const cellSize = clamp(focus.radius * 0.075, 10, 18);
-  const cells = new Map();
-
-  function getCellKey(cellX, cellY) {
-    return `${cellX}:${cellY}`;
-  }
-
-  function getCell(cellX, cellY) {
-    return cells.get(getCellKey(cellX, cellY));
-  }
-
-  function summarizeNeighborhood(cellX, cellY, radius) {
-    let weight = 0;
-    let pointCount = 0;
-    let sumX = 0;
-    let sumY = 0;
-
-    for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
-      for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
-        const cell = getCell(cellX + offsetX, cellY + offsetY);
-
-        if (!cell) {
-          continue;
-        }
-
-        weight += cell.weight;
-        pointCount += cell.pointCount;
-        sumX += cell.sumX;
-        sumY += cell.sumY;
-      }
-    }
-
-    return {
-      weight,
-      pointCount,
-      centerX: pointCount > 0 ? sumX / pointCount : cellX * cellSize,
-      centerY: pointCount > 0 ? sumY / pointCount : cellY * cellSize,
-    };
-  }
-
-  for (const particle of particles) {
-    const distance = Math.hypot(particle.baseX - focus.x, particle.baseY - focus.y);
-    const signal = (particle.concentration * 1.5) + (particle.alpha * 1.25) + (particle.size * 0.06);
-
-    if (distance < focus.radius * 0.9 || distance > focus.radius * 3.2 || signal < 0.52) {
-      continue;
-    }
-
-    const cellX = Math.round(particle.baseX / cellSize);
-    const cellY = Math.round(particle.baseY / cellSize);
-    const key = getCellKey(cellX, cellY);
-    const existing = cells.get(key);
-
-    if (existing) {
-      existing.weight += signal;
-      existing.pointCount += 1;
-      existing.sumX += particle.baseX;
-      existing.sumY += particle.baseY;
-      continue;
-    }
-
-    cells.set(key, {
-      cellX,
-      cellY,
-      weight: signal,
-      pointCount: 1,
-      sumX: particle.baseX,
-      sumY: particle.baseY,
-    });
-  }
-
-  const metrics = [];
-  let maxLocalWeight = 0;
-
-  for (const cell of cells.values()) {
-    const local = summarizeNeighborhood(cell.cellX, cell.cellY, 1);
-    const wide = summarizeNeighborhood(cell.cellX, cell.cellY, 2);
-    const distance = Math.hypot(local.centerX - focus.x, local.centerY - focus.y);
-    const surroundingWeight = Math.max(0.001, wide.weight - local.weight);
-    const prominence = local.weight / surroundingWeight;
-    const ringBias = clamp(
-      1 - (Math.abs(distance - (focus.radius * 1.45)) / (focus.radius * 1.65)),
-      0.2,
-      1
+    particle.livingPhase = phaseSeed * Math.PI * 2;
+    particle.livingSpeed = 0.16 + (hash01(particle.baseX, particle.baseY, 8137) * 0.14);
+    particle.coherentPhase = coherentPhase;
+    particle.coherentSpeed = 0.16 + (fieldMask * 0.11) + (sparseField * 0.04);
+    particle.coherentLivingPhase = coherentPhase + (anglePhase * Math.PI * 0.7);
+    particle.coherentMicroPhase = (coherentPhase * 1.38) + (anglePhase * Math.PI * 0.32);
+    particle.livingRadiusX = baseRadius * (0.72 + (hash01(particle.baseX, particle.baseY, 8147) * 0.42));
+    particle.livingRadiusY = baseRadius * (0.46 + (hash01(particle.baseX, particle.baseY, 8161) * 0.34));
+    particle.livingTangentX = tangentX;
+    particle.livingTangentY = tangentY;
+    particle.livingTangentAmount = 0.08 + (fieldMask * (0.2 + (particle.concentration * 0.52))) + (lowerOrbTexture * 0.12);
+    particle.livingPulse = 0.008 + (fieldMask * 0.01) + (lowerOrbTexture * 0.008);
+    particle.microPhase = hash01(particle.baseX, particle.baseY, 8237) * Math.PI * 2;
+    particle.microSpeed = 0.2 + (hash01(particle.baseX, particle.baseY, 8243) * 0.18);
+    particle.microRadiusX = 0.34 + (fieldMask * (0.34 + (sparseField * 0.44))) + (lowerOrbTexture * 0.16);
+    particle.microRadiusY = 0.28 + (fieldMask * (0.26 + (sparseField * 0.32))) + (lowerOrbTexture * 0.14);
+    particle.alivePhase = coherentPhase + (hash01(particle.baseX, particle.baseY, 8251) * 0.24);
+    particle.aliveSpeed = 0.18 + (fieldMask * 0.08) + (sparseField * 0.035);
+    particle.aliveRadius = 1.18 + (fieldMask * 0.86) + (sparseField * 0.42) + (lowerOrbTexture * 0.32);
+    particle.aliveDriftX = (waveX / waveLength) * 0.72 + (tangentX * 0.28);
+    particle.aliveDriftY = (waveY / waveLength) * 0.72 + (tangentY * 0.28);
+    particle.waveFlowMask = upperWaveMask;
+    particle.waveFlowX = waveX / waveLength;
+    particle.waveFlowY = waveY / waveLength;
+    particle.waveFlowSpan = (2.2 + (sparseField * 1.2) + (particle.concentration * 1.1)) * upperWaveMask;
+    particle.waveFlowSpeed = 0.055 + (hash01(particle.baseX, particle.baseY, 8179) * 0.045);
+    particle.inwardCyclePhase = hash01(particle.baseX, particle.baseY, 8191);
+    particle.inwardCycleSpeed = 0.062 + (fieldMask * 0.07) + (hash01(particle.baseX, particle.baseY, 8209) * 0.034);
+    particle.coherentInwardCyclePhase = particle.inwardCyclePhase;
+    particle.coherentInwardCycleSpeed = 0.072 + (fieldMask * 0.058) + (sparseField * 0.012);
+    particle.inwardCycleSpan = inwardSpan;
+    particle.inwardCycleOrbMask = orbMask;
+    particle.inwardCycleNearOrb = smoothstep(focus.radius * 1.28, focus.radius * 0.84, focusDistance);
+    particle.inwardCycleEdgeMask = smoothstep(focus.radius * 1.52, focus.radius * 0.98, focusDistance);
+    particle.inwardCycleOuter = (
+      localConveyorSpan * (0.88 + (hash01(particle.baseX, particle.baseY, 8213) * 0.22))
+    ) + (
+      fieldMask
+        * smoothstep(focus.radius * 1.42, focus.radius * 0.92, focusDistance)
+        * Math.max(0, (focus.radius * 1.34) - focusDistance)
+        * (0.9 + (pathNoise * 0.18))
     );
-    const score = local.weight * (0.55 + prominence) * ringBias;
-
-    metrics.push({
-      x: local.centerX,
-      y: local.centerY,
-      localWeight: local.weight,
-      localPointCount: local.pointCount,
-      prominence,
-      score,
-    });
-
-    maxLocalWeight = Math.max(maxLocalWeight, local.weight);
-  }
-
-  const anchors = [];
-  const anchorSpacing = clamp(focus.radius * 0.32, 48, 108);
-  const candidates = metrics
-    .filter((candidate) => {
-      return candidate.localWeight >= maxLocalWeight * 0.2
-        && candidate.localPointCount >= 10
-        && candidate.prominence >= 0.62
-        && candidate.score > 8;
-    })
-    .sort((left, right) => right.score - left.score);
-
-  for (const candidate of candidates) {
-    const tooClose = anchors.some((anchor) => {
-      return Math.hypot(candidate.x - anchor.x, candidate.y - anchor.y) < anchorSpacing;
-    });
-
-    if (tooClose) {
-      continue;
-    }
-
-    anchors.push(candidate);
-
-    if (anchors.length >= MOVING_CLUSTER_GROUPS) {
-      break;
-    }
-  }
-
-  const claimed = new Set();
-
-  anchors.forEach((anchor, groupIndex) => {
-    const clusterRadius = clamp((cellSize * 1.9) + ((anchor.localWeight / Math.max(1, maxLocalWeight)) * cellSize * 1.7), 14, 28);
-    const nearby = [];
-
-    for (let particleIndex = 0; particleIndex < particles.length; particleIndex += 1) {
-      const particle = particles[particleIndex];
-
-      if (particle.dynamicCluster || particle.generatedFill) {
-        continue;
-      }
-
-      const signal = (particle.concentration * 1.35) + (particle.alpha * 1.1);
-      const distance = Math.hypot(particle.baseX - anchor.x, particle.baseY - anchor.y);
-
-      if (claimed.has(particleIndex) || distance > clusterRadius || signal < 0.28) {
-        continue;
-      }
-
-      nearby.push({
-        particle,
-        particleIndex,
-        distance,
-        signal,
-      });
-    }
-
-    if (nearby.length < MOVING_CLUSTER_MEMBERS_MIN) {
-      return;
-    }
-
-    nearby.sort((left, right) => left.distance - right.distance);
-
-    const memberCount = clamp(
-      Math.round(nearby.length * 0.72),
-      MOVING_CLUSTER_MEMBERS_MIN,
-      Math.min(MOVING_CLUSTER_MEMBERS_MAX, nearby.length)
-    );
-    for (let memberIndex = 0; memberIndex < memberCount; memberIndex += 1) {
-      const member = nearby[memberIndex];
-
-      if (!member) {
-        continue;
-      }
-
-      const { particle, particleIndex, distance } = member;
-
-      claimed.add(particleIndex);
-      removeStaticClusterSource(particle, groupIndex, clusterRadius * 4.2);
-    }
-  });
-
-  dissolveResidualSmallMasses(store, focus);
-
-  return focus;
-}
-
-function addSunPopulationCopies(store, focus, generationControls) {
-  const sunPointPopulation = generationControls.sunPointPopulation ?? 1;
-
-  if (sunPointPopulation <= 1.001) {
-    return;
-  }
-
-  const baseParticles = [...store.particles];
-  const extraChanceScale = sunPointPopulation - 1;
-  const innerRadius = focus.radius * 1.08;
-  const compactness = smoothstep(1, 3, sunPointPopulation);
-
-  for (let particleIndex = 0; particleIndex < baseParticles.length; particleIndex += 1) {
-    const particle = baseParticles[particleIndex];
-
-    if (particle.dynamicCluster) {
-      continue;
-    }
-
-    const distanceToFocus = Math.hypot(particle.baseX - focus.x, particle.baseY - focus.y);
-
-    if (distanceToFocus > innerRadius) {
-      continue;
-    }
-
-    const sunMask = smoothstep(innerRadius, focus.radius * 0.18, distanceToFocus);
-    const densityMask = smoothstep(0.42, 0.92, particle.concentration);
-    const spawnChance = clamp(extraChanceScale * sunMask * densityMask * 0.72, 0, 0.94);
-
-    if (spawnChance <= 0.001 || hash01(particle.baseX, particle.baseY, 881) > spawnChance) {
-      continue;
-    }
-
-    const toFocusX = focus.x - particle.baseX;
-    const toFocusY = focus.y - particle.baseY;
-    const toFocusLength = Math.max(0.0001, Math.hypot(toFocusX, toFocusY));
-    const dirToFocusX = toFocusX / toFocusLength;
-    const dirToFocusY = toFocusY / toFocusLength;
-    const tangentX = -dirToFocusY;
-    const tangentY = dirToFocusX;
-    const inwardBias = (0.12 + (compactness * 0.52)) * (0.55 + (sunMask * 0.45));
-    const tangentSpread = (1 - compactness) * (0.28 + (hash01(particle.baseX, particle.baseY, 887) * 0.4));
-    const companionRadius = (0.06 + (hash01(particle.baseX, particle.baseY, 911) * 0.18)) * (0.9 - (compactness * 0.28));
-    const offsetX = (dirToFocusX * inwardBias) + (tangentX * tangentSpread);
-    const offsetY = (dirToFocusY * inwardBias) + (tangentY * tangentSpread);
-
-    pushParticle(store, {
-      baseX: particle.baseX + offsetX + (dirToFocusX * companionRadius),
-      baseY: particle.baseY + offsetY + (dirToFocusY * companionRadius),
-      size: particle.size * (0.76 + (hash01(particle.baseX, particle.baseY, 929) * 0.12)),
-      alpha: particle.alpha * (0.78 + (sunMask * 0.16)),
-      amplitude: particle.amplitude * 0.9,
-      hoverRadius: particle.hoverRadius * 0.92,
-      hoverSpeed: particle.hoverSpeed * 1.03,
-      concentration: clamp(particle.concentration * 1.02, 0, 1),
-      phase: hash01(particle.baseX, particle.baseY, 947) * Math.PI * 2,
-      speed: particle.speed * 1.02,
-    });
-
-    const secondChance = clamp((spawnChance - 0.26) * 0.9, 0, 0.64);
-
-    if (secondChance > 0.001 && hash01(particle.baseX, particle.baseY, 971) < secondChance) {
-      const secondTangent = ((hash01(particle.baseX, particle.baseY, 983) - 0.5) * 2) * tangentSpread * 0.9;
-      const secondRadius = companionRadius * (0.45 + (hash01(particle.baseX, particle.baseY, 991) * 0.22));
-
-      pushParticle(store, {
-        baseX: particle.baseX + (dirToFocusX * (inwardBias + secondRadius)) + (tangentX * secondTangent),
-        baseY: particle.baseY + (dirToFocusY * (inwardBias + secondRadius)) + (tangentY * secondTangent),
-        size: particle.size * (0.66 + (hash01(particle.baseX, particle.baseY, 1009) * 0.1)),
-        alpha: particle.alpha * (0.72 + (sunMask * 0.14)),
-        amplitude: particle.amplitude * 0.88,
-        hoverRadius: particle.hoverRadius * 0.9,
-        hoverSpeed: particle.hoverSpeed * 1.04,
-        concentration: clamp(particle.concentration, 0, 1),
-        phase: hash01(particle.baseX, particle.baseY, 1021) * Math.PI * 2,
-        speed: particle.speed * 1.04,
-      });
-    }
+    particle.inwardCycleSource = localConveyorSpan * (0.18 + (hash01(particle.baseX, particle.baseY, 8217) * 0.18));
+    particle.inwardCycleArrivalSpan = arrivalSpan;
+    particle.inwardCycleMerge = 1.8 + (fieldMask * 4.8) + (lowerOrbTexture * 1.6);
+    particle.inwardCycleX = toFocusX;
+    particle.inwardCycleY = toFocusY;
+    particle.inwardCycleNormalX = tangentX;
+    particle.inwardCycleNormalY = tangentY;
+    particle.inwardCycleArc = (hash01(particle.baseX, particle.baseY, 8221) - 0.5) * (0.45 + (fieldMask * 1.35));
+    particle.inwardCycleArrival = orbMask;
   }
 }
 
 function buildUnifiedParticles(pixels, width, height, generationControls) {
   const store = createParticleStore();
   const foregroundCircleAmount = generationControls.foregroundCircleAmount ?? 1;
+  const sunPointPopulation = generationControls.sunPointPopulation ?? 1;
+  const dotProtection = clamp(generationControls.dotProtection ?? 0, 0, 1.8);
+  const sunContinuity = smoothstep(0.5, 3, sunPointPopulation);
+  const protectionDensity = 1 - clamp(dotProtection * 0.24, 0, 0.36);
+  const protectionCompanions = 1 - clamp(dotProtection * 0.46, 0, 0.72);
 
-  const step = clamp(Math.min(width, height) / 245, MIN_PARTICLE_STEP, MAX_PARTICLE_STEP);
+  const baseStep = clamp(Math.min(width, height) / 245, MIN_PARTICLE_STEP, MAX_PARTICLE_STEP);
+  const step = baseStep * (1 + (dotProtection * 0.24));
   const localSpread = step * 1.15;
 
-  for (let y = step * 0.5; y < height; y += step) {
-    for (let x = step * 0.5; x < width; x += step) {
-      // Keep the source image legible by only nudging the sample positions slightly.
-      const jitterX = (hash01(x, y, 19) - 0.5) * step * 0.18;
-      const jitterY = (hash01(x, y, 41) - 0.5) * step * 0.18;
+  for (let y = step * 0.5, cellY = 0; y < height; y += step, cellY += 1) {
+    for (let x = step * 0.5, cellX = 0; x < width; x += step, cellX += 1) {
+      const jitterX = (hash01(x, y, 19) - 0.5) * step * 0.04;
+      const jitterY = (hash01(x, y, 41) - 0.5) * step * 0.04;
       const sampleX = clamp(Math.round(x + jitterX), 0, width - 1);
       const sampleY = clamp(Math.round(y + jitterY), 0, height - 1);
       const sourceBrightness = readBrightness(pixels, width, sampleX, sampleY);
-      const sourceConcentration = Math.pow(readLocalBrightnessAverage(pixels, width, sampleX, sampleY, localSpread), 1.7);
+      const localBrightness = readLocalBrightnessAverage(pixels, width, sampleX, sampleY, localSpread);
+      const softBrightness = readSoftBrightnessGuide(pixels, width, sampleX, sampleY, step);
+      const orbProfile = getPrimaryOrbProfile(sampleX, sampleY, width, height);
+      const primaryOrbMask = orbProfile.mask;
       const orbMask = getSuppressedOrbMask(sampleX, sampleY, width, height);
-      const brightness = orbMask > 0
-        ? lerp(sourceBrightness, 0.26 + (hash01(sampleX, sampleY, 4321) * 0.08), orbMask)
-        : sourceBrightness;
-      const concentration = orbMask > 0
-        ? lerp(sourceConcentration, 0.055 + (hash01(sampleX, sampleY, 4339) * 0.05), orbMask)
-        : sourceConcentration;
+      const continuityFloor = getContinuityFloor(sampleX, sampleY, width, height);
+      const lowerDensityBias = smoothstep(height * 0.42, height * 0.95, sampleY) * (1 - primaryOrbMask);
+      let brightness = clamp(Math.max(
+        continuityFloor.brightness + (lowerDensityBias * 0.035),
+        (softBrightness * 0.72) + (localBrightness * 0.22) + (sourceBrightness * 0.018)
+      ), 0, 1);
+      let concentration = Math.pow(clamp(Math.max(
+        continuityFloor.concentration + (lowerDensityBias * 0.055),
+        (softBrightness * 0.74) + (localBrightness * 0.2)
+      ), 0, 1), 1.2);
+
+      if (primaryOrbMask > 0.001) {
+        const orbGrain = hash01(sampleX, sampleY, 4387) - 0.5;
+        const orbBrightness = 0.9 + (orbProfile.topSolid * 0.12) + (orbProfile.lowerTexture * 0.04) + (orbGrain * 0.01);
+        const orbConcentration = 0.92 + (orbProfile.topSolid * 0.1) + (orbProfile.lowerTexture * 0.04) + (orbGrain * 0.008);
+
+        brightness = lerp(brightness, Math.max(brightness, orbBrightness), primaryOrbMask * 0.98);
+        concentration = lerp(concentration, Math.max(concentration, orbConcentration), primaryOrbMask * 0.98);
+      }
+
+      if (orbMask > 0.001) {
+        const compactBrightness = Math.min(brightness, 0.26 + (lowerDensityBias * 0.08));
+        const compactConcentration = Math.min(concentration, 0.3 + (lowerDensityBias * 0.1));
+
+        brightness = lerp(brightness, compactBrightness, orbMask * 0.86);
+        concentration = lerp(concentration, compactConcentration, orbMask * 0.86);
+      }
+
       const foregroundMask = smoothstep(0.32, 0.92, concentration);
       const foregroundChanceScale = lerp(1, foregroundCircleAmount, foregroundMask);
-      const density = Math.pow(brightness, 2.05);
+      const density = Math.pow(brightness, 1.48);
       const presence = clamp((density * 0.58) + (concentration * 0.94), 0, 1.25);
 
-      if (presence < 0.04) {
+      if (presence < 0.052) {
         continue;
       }
 
       const worldX = sampleX - width / 2;
       const worldY = height / 2 - sampleY;
-      const drawChance = clamp(((density * 0.72) + (concentration * 0.88)) * foregroundChanceScale, 0, 0.995);
+      const continuityChance = (smoothstep(0.22, 0.7, brightness) * 0.28) + (continuityFloor.concentration * 0.14);
+      const primaryOrbChance = primaryOrbMask * lerp(0.988, 0.9995, sunContinuity);
+      const drawChance = clamp(Math.max(
+        ((density * 0.7) + (concentration * 0.82)) * foregroundChanceScale * protectionDensity,
+        (continuityChance + (lowerDensityBias * 0.24)) * protectionDensity,
+        primaryOrbChance * lerp(1, 0.9, clamp(dotProtection / 1.8, 0, 1))
+      ), 0, 0.998);
 
-      if (hash01(sampleX, sampleY, 71) > drawChance) {
+      if (getStructuredThreshold(cellX, cellY, sampleX, sampleY) > drawChance) {
         continue;
       }
 
       const amplitude = 0.26 + ((1 - concentration) * 0.58);
       const hoverRadius = 1.8 + ((1 - concentration) * 4.4) + (hash01(sampleX, sampleY, 131) * 0.7);
-      const size = 0.62 + (density * 1.2) + (concentration * 2.35) + (hash01(sampleX, sampleY, 97) * 0.08);
-      const alpha = 0.035 + (density * 0.16) + (concentration * 0.84);
+      const toneForSize = clamp(
+        (density * 0.32)
+          + (concentration * 0.7)
+          + (orbProfile.topSolid * 0.7)
+          + (orbProfile.lowerTexture * 0.24),
+        0,
+        1
+      );
+      const sparseBand = toneForSize < 0.22 ? -0.08 : 0;
+      const midBand = toneForSize > 0.42 ? 0.28 : 0;
+      const brightBand = toneForSize > 0.74 ? 0.72 : 0;
+      const orbWeight = (orbProfile.topSolid * 1.52) + (orbProfile.lowerTexture * 0.62) + (orbProfile.rim * 0.18);
+      const size = 0.42
+        + (Math.pow(toneForSize, 0.56) * 2.92)
+        + sparseBand
+        + midBand
+        + brightBand
+        + orbWeight
+        + (hash01(sampleX, sampleY, 97) * 0.055);
+      const alpha = 1;
       const speed = 0.14 + ((1 - concentration) * 0.2) + (hash01(sampleX, sampleY, 149) * 0.028);
       const hoverSpeed = 0.18 + (hash01(sampleX, sampleY, 157) * 0.16);
 
@@ -727,7 +660,7 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
           baseX: worldX + (Math.cos(companionAngle) * companionRadius),
           baseY: worldY + (Math.sin(companionAngle) * companionRadius),
           size: size * (companionSizeScale + (hash01(sampleX, sampleY, 211 + seedOffset) * 0.12)),
-          alpha: alpha * alphaScaleValue,
+          alpha: 1,
           amplitude: amplitude * 0.94,
           hoverRadius: hoverRadius * 0.96,
           hoverSpeed: hoverSpeed * 1.02,
@@ -737,25 +670,32 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
         });
       }
 
-      const companionChance = clamp(((concentration - 0.68) * 1.35) * foregroundChanceScale, 0, 0.74);
+      const companionChance = clamp((((concentration - 0.66) * 0.64) + (orbProfile.topSolid * 0.38) + (orbProfile.lowerTexture * 0.18)) * foregroundChanceScale * protectionCompanions, 0, 0.68);
 
       if (hash01(sampleX, sampleY, 173) < companionChance) {
-        pushCompanion(0, 1, 0.82, 0.72);
+        pushCompanion(0, primaryOrbMask > 0.35 ? 0.46 : 0.92, primaryOrbMask > 0.35 ? 0.72 : 0.78, primaryOrbMask > 0.35 ? 0.6 : 0.68);
       }
 
-      const extraForegroundChance = clamp((foregroundCircleAmount - 1) * 0.46 * foregroundMask, 0, 0.78);
+      const extraForegroundChance = clamp((((foregroundCircleAmount - 1) * 0.32 * foregroundMask) + (orbProfile.topSolid * 0.34) + (orbProfile.lowerTexture * 0.12)) * protectionCompanions, 0, 0.62);
 
       if (extraForegroundChance > 0 && hash01(sampleX, sampleY, 257) < extraForegroundChance) {
-        pushCompanion(53, 0.84, 0.78, 0.68);
+        pushCompanion(53, primaryOrbMask > 0.35 ? 0.42 : 0.84, primaryOrbMask > 0.35 ? 0.62 : 0.78, primaryOrbMask > 0.35 ? 0.48 : 0.68);
+      }
+
+      const orbFillChance = clamp(primaryOrbMask * 0.34 * lerp(1, 0.72, clamp(dotProtection / 1.8, 0, 1)), 0, 0.34);
+
+      if (orbFillChance > 0 && hash01(sampleX, sampleY, 307) < orbFillChance) {
+        pushCompanion(107, orbProfile.topSolid > 0.2 ? 0.28 : 0.36, orbProfile.topSolid > 0.2 ? 0.58 : 0.52, orbProfile.topSolid > 0.2 ? 0.46 : 0.42);
       }
     }
   }
 
-  const focus = detectPrimaryMass(store.particles);
-  addSunPopulationCopies(store, focus, generationControls);
+  const focus = getPrimaryOrbWorld(width, height);
+  addLivingMotionProperties(store, focus);
 
   const finalized = finalizeParticleStore(store);
   finalized.focus = focus;
+  finalized.primaryOrb = focus;
   return finalized;
 }
 
@@ -793,6 +733,7 @@ function createDotMaterial(vertexShader, color) {
     transparent: true,
     depthWrite: false,
     depthTest: false,
+    toneMapped: false,
     uniforms: {
       uColor: { value: new THREE.Color(color) },
       uPixelRatio: { value: window.devicePixelRatio || 1 },
@@ -806,12 +747,14 @@ function CameraBounds({ width, height }) {
   const { camera } = useThree();
 
   useEffect(() => {
+    camera.manual = true;
     camera.left = -width / 2;
     camera.right = width / 2;
     camera.top = height / 2;
     camera.bottom = -height / 2;
     camera.near = -100;
     camera.far = 100;
+    camera.zoom = 1;
     camera.position.set(0, 0, 10);
     camera.updateProjectionMatrix();
   }, [camera, width, height]);
@@ -821,7 +764,7 @@ function CameraBounds({ width, height }) {
 
 function UnifiedPointCloud({ data, controls }) {
   const pointsRef = useRef(null);
-  const material = useMemo(() => createDotMaterial(SIMPLE_VERTEX_SHADER, "#f3ede2"), []);
+  const material = useMemo(() => createDotMaterial(SIMPLE_VERTEX_SHADER, "#e9dfd0"), []);
   const { gl } = useThree();
 
   useEffect(() => {
@@ -842,191 +785,169 @@ function UnifiedPointCloud({ data, controls }) {
     const positions = geometry.attributes.position.array;
     const sizes = geometry.attributes.aSize.array;
     const alphas = geometry.attributes.aAlpha.array;
-    const sunReactions = [];
-
-    for (const clusterGroup of data.clusterGroups ?? []) {
-      const rawCycle = ((elapsed * controls.clusterSpeed) / clusterGroup.duration) + clusterGroup.travelOffset;
-      const loop = rawCycle - Math.floor(rawCycle);
-      let travelT = 0;
-      let mergeT = smoothstep(clusterGroup.moveEnd - 0.22, 0.995, loop);
-
-      if (loop < clusterGroup.moveEnd) {
-        const phaseT = loop / Math.max(0.001, clusterGroup.moveEnd);
-        travelT = smoothstep(0, 1, phaseT);
-        travelT = smoothstep(0, 1, travelT);
-      } else {
-        travelT = 1;
-      }
-
-      const effectiveClusterPull = getEffectiveClusterPull(controls);
-      const pulledTargetX = lerp(clusterGroup.originX, clusterGroup.targetX, effectiveClusterPull);
-      const pulledTargetY = lerp(clusterGroup.originY, clusterGroup.targetY, effectiveClusterPull);
-      const pathCenterX = lerp(clusterGroup.originX, pulledTargetX, travelT);
-      const pathCenterY = lerp(clusterGroup.originY, pulledTargetY, travelT);
-      const centerX = lerp(pathCenterX, clusterGroup.sinkX, mergeT);
-      const centerY = lerp(pathCenterY, clusterGroup.sinkY, mergeT);
-      const pathArc = Math.sin(travelT * Math.PI) * clusterGroup.arcAmount * controls.clusterArc;
-      const softFlow = Math.sin((travelT * Math.PI * 2) + clusterGroup.clusterPhase) * clusterGroup.arcAmount * 0.12;
-      const meander = Math.sin((elapsed * 0.22 * controls.clusterSpeed) + clusterGroup.clusterPhase) * clusterGroup.arcAmount * 0.08;
-      const reactionAmount = smoothstep(clusterGroup.moveEnd - 0.36, clusterGroup.moveEnd + 0.012, loop)
-        * (1 - smoothstep(0.984, 0.999, loop));
-
-      sunReactions.push({
-        x: centerX + (clusterGroup.pathNormalX * (pathArc + softFlow + meander)),
-        y: centerY + (clusterGroup.pathNormalY * (pathArc + softFlow + meander)),
-        strength: reactionAmount * clusterGroup.mergeStrength * 1.45,
-        radius: clusterGroup.mergeRadius * 1.25,
-      });
-    }
+    const globalMotion = 0.16 + ((controls.globalMotion ?? 1) * 0.84);
+    const globalSpeed = controls.globalSpeed ?? 1;
+    const localMotionControl = 0.22 + ((controls.localMotion ?? 1) * 0.78);
+    const localSpeedControl = controls.localSpeed ?? 1;
+    const flowSpeedControl = controls.flowSpeed ?? 1;
+    const inwardFlowControl = controls.inwardFlow ?? 1;
+    const flowDistanceControl = controls.flowDistance ?? 1;
+    const respawnSpreadControl = controls.respawnSpread ?? 1;
+    const mergeReachControl = controls.mergeReach ?? 1;
+    const flowArcControl = controls.flowArc ?? 1;
+    const waveFlowControl = controls.waveFlow ?? 1;
+    const dotProtectionControl = clamp(controls.dotProtection ?? 0, 0, 1.8);
+    const hoverSpacingControl = clamp(controls.hoverSpacing ?? 1.2, 0, 1.8);
+    const spacingCoherence = clamp(hoverSpacingControl / 1.8, 0, 1);
+    const protectionMotionScale = 1 - clamp(dotProtectionControl * 0.1, 0, 0.18);
+    const spacingMotionScale = 1 - clamp(hoverSpacingControl * 0.14, 0, 0.24);
+    const cohesion = clamp((controls.motionCohesion ?? 1.12) / 1.8, 0, 1);
+    const sparseMotion = 0.18 + ((controls.backgroundMotion ?? 1) * 0.82);
+    const denseMotion = 0.18 + ((controls.foregroundMotion ?? 1) * 0.82);
 
     for (let index = 0; index < data.particles.length; index += 1) {
       const particle = data.particles[index];
-      const visualConcentration = particle.sourceClusterBackground && !particle.dynamicCluster
-        ? particle.sourceClusterConcentration
-        : particle.concentration;
+      const visualConcentration = particle.concentration;
       const backgroundMix = clamp(1 - visualConcentration, 0, 1);
-      const motionScale = controls.globalMotion * lerp(controls.foregroundMotion, controls.backgroundMotion, backgroundMix);
-      const speedScale = controls.globalSpeed * lerp(controls.foregroundSpeed, controls.backgroundSpeed, backgroundMix);
+      const motionScale = globalMotion * lerp(denseMotion, sparseMotion, backgroundMix);
+      const speedScale = globalSpeed * lerp(controls.foregroundSpeed, controls.backgroundSpeed, backgroundMix);
+      const localMotionScale = motionScale * localMotionControl * protectionMotionScale * spacingMotionScale;
+      const localSpeedScale = speedScale * localSpeedControl;
       const sizeScale = controls.globalDotSize * lerp(controls.foregroundDotSize, controls.backgroundDotSize, backgroundMix);
-      const alphaScale = controls.globalAlpha * lerp(controls.foregroundAlpha, controls.backgroundAlpha, backgroundMix);
-      const fieldX = Math.sin((particle.baseY * 0.009) + (elapsed * 0.2 * speedScale) + particle.phase) * particle.amplitude * 1.12 * controls.fieldAmount * motionScale;
-      const fieldY = Math.cos((particle.baseX * 0.008) - (elapsed * 0.18 * speedScale) + (particle.phase * 0.7)) * particle.amplitude * 1.12 * controls.fieldAmount * motionScale;
-      const driftX = Math.sin((elapsed * particle.speed * speedScale) + particle.phase) * particle.amplitude * 1.55 * controls.driftAmount * motionScale;
-      const driftY = Math.cos((elapsed * (particle.speed * 0.9) * speedScale) + (particle.phase * 1.31)) * particle.amplitude * 1.55 * controls.driftAmount * motionScale;
-      const ambientHover = (particle.hoverRadius ?? (1.6 + ((1 - visualConcentration) * 3.8))) * controls.hoverAmount * motionScale;
-      const hoverSpeed = (particle.hoverSpeed ?? 0.22) * speedScale;
-      const hoverX = Math.sin((elapsed * hoverSpeed) + (particle.phase * 0.8)) * ambientHover;
-      const hoverY = Math.cos((elapsed * (hoverSpeed * 0.94)) + (particle.phase * 1.1)) * ambientHover;
+      const orbSizeBoost = 1 + ((particle.inwardCycleArrival ?? 0) * ((controls.orbDotSize ?? 1) - 1));
+      const phase = lerp(particle.phase, particle.coherentPhase ?? particle.phase, cohesion);
+      const particleSpeed = lerp(particle.speed, particle.coherentSpeed ?? particle.speed, cohesion * 0.86);
+      const fieldX = Math.sin((particle.baseY * 0.009) + (elapsed * 0.2 * localSpeedScale) + phase) * particle.amplitude * 1.12 * controls.fieldAmount * localMotionScale;
+      const fieldY = Math.cos((particle.baseX * 0.008) - (elapsed * 0.18 * localSpeedScale) + (phase * 0.7)) * particle.amplitude * 1.12 * controls.fieldAmount * localMotionScale;
+      const driftX = Math.sin((elapsed * particleSpeed * localSpeedScale) + phase) * particle.amplitude * 1.55 * controls.driftAmount * localMotionScale;
+      const driftY = Math.cos((elapsed * (particleSpeed * 0.9) * localSpeedScale) + (phase * 1.31)) * particle.amplitude * 1.55 * controls.driftAmount * localMotionScale;
+      const ambientHover = (particle.hoverRadius ?? (1.6 + ((1 - visualConcentration) * 3.8))) * controls.hoverAmount * localMotionScale;
+      const hoverSpeed = lerp(particle.hoverSpeed ?? 0.22, 0.22 + (backgroundMix * 0.06), cohesion * 0.72) * localSpeedScale;
+      const hoverWave = Math.sin((elapsed * hoverSpeed) + (phase * 0.8));
+      const hoverCross = Math.cos((elapsed * (hoverSpeed * 0.94)) + (phase * 1.1));
+      const freeHoverX = hoverWave * ambientHover;
+      const freeHoverY = hoverCross * ambientHover;
+      const spacedHoverX = ((particle.aliveDriftX ?? particle.inwardCycleX) * hoverWave * ambientHover * 0.58)
+        + ((particle.inwardCycleNormalX ?? 0) * hoverCross * ambientHover * 0.18);
+      const spacedHoverY = ((particle.aliveDriftY ?? particle.inwardCycleY) * hoverWave * ambientHover * 0.58)
+        + ((particle.inwardCycleNormalY ?? 0) * hoverCross * ambientHover * 0.18);
+      const hoverX = lerp(freeHoverX, spacedHoverX, spacingCoherence);
+      const hoverY = lerp(freeHoverY, spacedHoverY, spacingCoherence);
       const swayRadius = ambientHover * 0.46 * controls.swayAmount;
-      const swayX = Math.cos((elapsed * ((hoverSpeed * 0.7) + 0.08)) + (particle.phase * 1.9)) * swayRadius;
-      const swayY = Math.sin((elapsed * ((hoverSpeed * 0.62) + 0.06)) + (particle.phase * 1.4)) * swayRadius;
+      const swayX = Math.cos((elapsed * ((hoverSpeed * 0.7) + 0.08)) + (phase * 1.9)) * swayRadius;
+      const swayY = Math.sin((elapsed * ((hoverSpeed * 0.62) + 0.06)) + (phase * 1.4)) * swayRadius;
       const tideRadius = ambientHover * 0.26 * controls.tideAmount;
-      const tideX = Math.sin((particle.baseY * 0.0028) + (elapsed * 0.12 * speedScale) + (particle.phase * 0.35)) * tideRadius;
-      const tideY = Math.cos((particle.baseX * 0.0025) - (elapsed * 0.11 * speedScale) + (particle.phase * 0.42)) * tideRadius;
+      const tideX = Math.sin((particle.baseY * 0.0028) + (elapsed * 0.12 * localSpeedScale) + (phase * 0.35)) * tideRadius;
+      const tideY = Math.cos((particle.baseX * 0.0025) - (elapsed * 0.11 * localSpeedScale) + (phase * 0.42)) * tideRadius;
       let x = particle.baseX + driftX + fieldX + hoverX + swayX + tideX;
       let y = particle.baseY + driftY + fieldY + hoverY + swayY + tideY;
-      let size = particle.size * sizeScale;
-      let alpha = particle.alpha * alphaScale;
+      let size = particle.size * sizeScale * orbSizeBoost;
+      let alpha = particle.alpha;
 
-      if (particle.dynamicCluster) {
-        const rawCycle = ((elapsed * controls.clusterSpeed) / particle.clusterDuration) + particle.clusterTravelOffset;
-        const loop = rawCycle - Math.floor(rawCycle);
-        const moveEnd = particle.clusterMoveEnd ?? 0.78;
-        let travelT = 0;
-        let mergeT = smoothstep(moveEnd - 0.22, 0.995, loop);
-
-        if (loop < moveEnd) {
-          const phaseT = loop / Math.max(0.001, moveEnd);
-          travelT = smoothstep(0, 1, phaseT);
-          travelT = smoothstep(0, 1, travelT);
-        } else {
-          travelT = 1;
-        }
-
-        const effectiveClusterPull = getEffectiveClusterPull(controls);
-        const pulledTargetX = lerp(particle.clusterOriginX, particle.clusterTargetX, effectiveClusterPull);
-        const pulledTargetY = lerp(particle.clusterOriginY, particle.clusterTargetY, effectiveClusterPull);
-        const pathCenterX = lerp(particle.clusterOriginX, pulledTargetX, travelT);
-        const pathCenterY = lerp(particle.clusterOriginY, pulledTargetY, travelT);
-        const centerX = lerp(pathCenterX, particle.clusterSinkX, mergeT);
-        const centerY = lerp(pathCenterY, particle.clusterSinkY, mergeT);
-        const pathArc = Math.sin(travelT * Math.PI) * particle.clusterArcAmount * controls.clusterArc;
-        const hoverX = Math.sin((elapsed * 0.46 * controls.clusterSpeed) + particle.clusterPhase) * particle.clusterHoverX * controls.clusterHover;
-        const hoverY = Math.cos((elapsed * 0.39 * controls.clusterSpeed) + (particle.clusterPhase * 1.13)) * particle.clusterHoverY * controls.clusterHover;
-        const meanderSpeed = particle.clusterMeanderSpeed ?? 0.28;
-        const meanderX = Math.sin((elapsed * meanderSpeed * controls.clusterSpeed) + (particle.clusterPhase * 0.61)) * (particle.clusterMeanderX ?? 1.2);
-        const meanderY = Math.cos((elapsed * (meanderSpeed * 0.92) * controls.clusterSpeed) + (particle.clusterPhase * 0.83)) * (particle.clusterMeanderY ?? 1.2);
-        const flowX = Math.sin((travelT * Math.PI * 2) + particle.clusterPhase) * (particle.clusterPathNormalX * particle.clusterArcAmount * 0.16);
-        const flowY = Math.cos((travelT * Math.PI * 2) + particle.clusterPhase) * (particle.clusterPathNormalY * particle.clusterArcAmount * 0.16);
-        const settleBlend = smoothstep(0.62, 1, travelT);
-        const rotation = Math.sin((elapsed * 0.18) + particle.clusterPhase) * particle.clusterRotate;
-        const offsetCos = Math.cos(rotation);
-        const offsetSin = Math.sin(rotation);
-        const offsetX = (particle.clusterOffsetX * offsetCos) - (particle.clusterOffsetY * offsetSin);
-        const offsetY = (particle.clusterOffsetX * offsetSin) + (particle.clusterOffsetY * offsetCos);
-        x = centerX
-          + offsetX
-          + hoverX
-          + (meanderX * (1 - (settleBlend * 0.58)))
-          + (flowX * (1 - (settleBlend * 0.42)))
-          + driftX
-          + (particle.clusterPathNormalX * pathArc * (1 - (settleBlend * 0.3)));
-        y = centerY
-          + offsetY
-          + hoverY
-          + (meanderY * (1 - (settleBlend * 0.58)))
-          + (flowY * (1 - (settleBlend * 0.42)))
-          + driftY
-          + (particle.clusterPathNormalY * pathArc * (1 - (settleBlend * 0.3)));
-
-        const suctionT = smoothstep(particle.clusterSuctionStart ?? 0.2, 1, travelT + (mergeT * 0.6));
-        const suctionDX = particle.clusterSinkX - x;
-        const suctionDY = particle.clusterSinkY - y;
-        const suctionDistance = Math.max(0.0001, Math.hypot(suctionDX, suctionDY));
-        const proximity = 1 - clamp(suctionDistance / Math.max(1, data.focus.radius * 0.68), 0, 1);
-        const suctionBias = particle.clusterSuctionBias ?? 0.8;
-        const suctionPull = clamp(
-          ((suctionT * 0.16) + (proximity * 0.32) + (mergeT * 0.42)) * suctionBias,
-          0,
-          0.82
+      if ((particle.inwardCycleSpan ?? 0) > 0.001) {
+        const inwardPhase = lerpCycle(
+          particle.inwardCyclePhase,
+          particle.coherentInwardCyclePhase ?? particle.inwardCyclePhase,
+          cohesion
         );
-        x += (suctionDX / suctionDistance) * suctionDistance * suctionPull;
-        y += (suctionDY / suctionDistance) * suctionDistance * suctionPull;
+        const inwardSpeed = lerp(
+          particle.inwardCycleSpeed,
+          particle.coherentInwardCycleSpeed ?? particle.inwardCycleSpeed,
+          cohesion * 0.88
+        );
+        const rawCycle = (elapsed * inwardSpeed * (0.88 + (globalSpeed * 0.26)) * flowSpeedControl) + inwardPhase;
+        const loop = rawCycle - Math.floor(rawCycle);
+        const motionAmount = (0.86 + (globalMotion * 0.36)) * inwardFlowControl;
+        const outer = (particle.inwardCycleOuter ?? (particle.inwardCycleSpan * 0.48)) * motionAmount * respawnSpreadControl;
+        const source = (particle.inwardCycleSource ?? (particle.inwardCycleSpan * 0.14)) * motionAmount * (0.76 + (respawnSpreadControl * 0.24));
+        const arrival = (particle.inwardCycleArrivalSpan ?? (particle.inwardCycleSpan * 0.38)) * motionAmount * flowDistanceControl;
+        const merge = (particle.inwardCycleMerge ?? 3.2) * motionAmount * mergeReachControl;
+        const orbLoopMask = particle.inwardCycleOrbMask ?? 0;
+        const nearOrbGuard = particle.inwardCycleNearOrb ?? 0;
+        const edgeMask = particle.inwardCycleEdgeMask ?? 0;
+        const travelT = 1 - Math.pow(1 - loop, 1.28);
+        const pathStart = (-(outer * 0.72) - (source * 0.18)) * (1 - nearOrbGuard);
+        const pathEnd = arrival + (merge * 0.42);
+        let pathPosition = lerp(pathStart, pathEnd, travelT);
+        let arcT = Math.sin(travelT * Math.PI);
 
-        const fadeIn = smoothstep(0.08, 0.18, loop);
-        const fadeOut = 1 - smoothstep(moveEnd + 0.012, 0.995, loop);
-        const absorbedFade = 1 - (mergeT * 0.18);
-        alpha *= fadeIn * fadeOut * absorbedFade * particle.clusterAlphaBoost * controls.clusterAlpha;
-        size *= particle.clusterSizeBoost * controls.clusterSize * (1 - (mergeT * 0.42));
-      } else {
-        if (particle.sourceClusterBlend) {
-          const scatterX = (particle.sourceDissolveX ?? 0)
-            + (Math.cos((elapsed * 0.18) + particle.sourceScatterPhase) * particle.sourceScatterRadius);
-          const scatterY = (particle.sourceDissolveY ?? 0)
-            + (Math.sin((elapsed * 0.15) + particle.sourceScatterPhase) * particle.sourceScatterRadius);
-          x += scatterX;
-          y += scatterY;
-          alpha *= particle.sourceClusterAlpha;
-          size *= particle.sourceClusterSize;
+        if (edgeMask > 0.001) {
+          const entryT = smoothstep(0.54, 1, travelT);
+          pathPosition += edgeMask * entryT * merge * 0.36;
+          arcT *= lerp(1, 0.32, edgeMask);
         }
 
-        const focusDistance = Math.hypot(particle.baseX - data.focus.x, particle.baseY - data.focus.y);
-        const sunMask = smoothstep(data.focus.radius * 1.22, data.focus.radius * 0.74, focusDistance) * smoothstep(0.36, 0.82, visualConcentration);
+        if (orbLoopMask > 0.5) {
+          const orbTravelT = (Math.sin(rawCycle * Math.PI * 2) * 0.5) + 0.5;
+          const orbPulse = smoothstep(0, 1, orbTravelT);
 
-        if (sunMask > 0.001) {
-          for (const reaction of sunReactions) {
-            if (reaction.strength <= 0.001) {
-              continue;
-            }
-
-            const dx = reaction.x - particle.baseX;
-            const dy = reaction.y - particle.baseY;
-            const distance = Math.hypot(dx, dy);
-
-            if (distance > reaction.radius) {
-              continue;
-            }
-
-            const local = 1 - (distance / reaction.radius);
-            const soften = local * local * reaction.strength * sunMask;
-            const normX = distance > 0.0001 ? dx / distance : 0;
-            const normY = distance > 0.0001 ? dy / distance : 0;
-            const mergePull = soften * reaction.radius * 0.075;
-            const ripple = Math.sin(local * Math.PI) * soften * reaction.radius * 0.034;
-
-            x += (normX * mergePull) - (normY * ripple);
-            y += (normY * mergePull) + (normX * ripple);
-            size *= 1 + (soften * 0.28);
-            alpha *= 1 + (soften * 0.32);
-          }
+          pathPosition = lerp(pathPosition, arrival * 0.34 * orbPulse, orbLoopMask * 0.22);
+          arcT = lerp(arcT, Math.sin(orbTravelT * Math.PI) * 0.12, orbLoopMask * 0.28);
         }
+
+        const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl;
+
+        x += (particle.inwardCycleX * pathPosition) + (particle.inwardCycleNormalX * arc);
+        y += (particle.inwardCycleY * pathPosition) + (particle.inwardCycleNormalY * arc);
+      }
+
+      if ((particle.livingRadiusX ?? 0) > 0.001) {
+        const livingScale = (0.34 + (globalMotion * 0.72)) * localMotionControl;
+        const livingSpeed = (0.72 + (globalSpeed * 0.16)) * particle.livingSpeed * localSpeedControl;
+        const livingPhase = lerp(particle.livingPhase, particle.coherentLivingPhase ?? particle.livingPhase, cohesion);
+        const livingT = (elapsed * livingSpeed) + livingPhase;
+        const localX = (Math.cos(livingT) * particle.livingRadiusX)
+          + (Math.sin((livingT * 0.63) + livingPhase) * particle.livingRadiusY * 0.28);
+        const localY = (Math.sin(livingT * 0.92) * particle.livingRadiusY)
+          + (Math.cos((livingT * 0.57) + livingPhase) * particle.livingRadiusX * 0.2);
+        const tangentPulse = Math.sin((livingT * 0.41) + livingPhase) * particle.livingTangentAmount;
+        const pulse = Math.sin((livingT * 0.73) + livingPhase) * particle.livingPulse;
+
+        x += (localX + (particle.livingTangentX * tangentPulse)) * livingScale;
+        y += (localY + (particle.livingTangentY * tangentPulse)) * livingScale;
+        size *= 1 + pulse;
+      }
+
+      if ((particle.waveFlowMask ?? 0) > 0.001) {
+        const waveTravel = Math.sin(elapsed * 0.16 * (0.85 + (globalSpeed * 0.18)) * flowSpeedControl) * 0.5;
+        const waveAmount = particle.waveFlowSpan * (0.55 + (globalMotion * 0.62)) * waveFlowControl;
+
+        x += particle.waveFlowX * waveTravel * waveAmount;
+        y += particle.waveFlowY * waveTravel * waveAmount;
+      }
+
+      if ((particle.microRadiusX ?? 0) > 0.001) {
+        const microPhase = lerp(particle.microPhase, particle.coherentMicroPhase ?? particle.microPhase, cohesion);
+        const microT = (elapsed * particle.microSpeed * (0.82 + (globalSpeed * 0.18)) * localSpeedControl) + microPhase;
+        const microScale = (0.68 + (globalMotion * 0.32)) * (0.76 + (localMotionControl * 0.34));
+        const microX = (Math.cos(microT) * particle.microRadiusX)
+          + (Math.sin((microT * 0.47) + microPhase) * particle.microRadiusY * 0.34);
+        const microY = (Math.sin(microT * 0.88) * particle.microRadiusY)
+          + (Math.cos((microT * 0.53) + microPhase) * particle.microRadiusX * 0.28);
+
+        x += microX * microScale;
+        y += microY * microScale;
+      }
+
+      if ((particle.aliveRadius ?? 0) > 0.001) {
+        const alivePhase = particle.alivePhase ?? phase;
+        const aliveT = (elapsed * particle.aliveSpeed * (0.86 + (globalSpeed * 0.18)) * localSpeedControl) + alivePhase;
+        const aliveWave = Math.sin(aliveT);
+        const aliveCross = Math.cos((aliveT * 0.73) + alivePhase);
+        const aliveScale = (0.72 + (globalMotion * 0.42)) * (0.78 + (localMotionControl * 0.32));
+        const aliveRadius = particle.aliveRadius * aliveScale;
+
+        x += (particle.aliveDriftX * aliveWave * aliveRadius)
+          + (particle.inwardCycleNormalX * aliveCross * aliveRadius * 0.24);
+        y += (particle.aliveDriftY * aliveWave * aliveRadius)
+          + (particle.inwardCycleNormalY * aliveCross * aliveRadius * 0.24);
       }
 
       positions[index * 3] = x;
       positions[(index * 3) + 1] = y;
       positions[(index * 3) + 2] = 0;
       sizes[index] = size;
-      alphas[index] = alpha;
+      alphas[index] = 1;
     }
 
     geometry.attributes.position.needsUpdate = true;
@@ -1043,6 +964,28 @@ function UnifiedPointCloud({ data, controls }) {
       </bufferGeometry>
       <primitive object=${material} attach="material" />
     </points>
+  `;
+}
+
+function SolidOrb({ orb, opacity }) {
+  const visibleOpacity = clamp(opacity ?? 0, 0, 1);
+
+  if (!orb || visibleOpacity <= 0.001) {
+    return null;
+  }
+
+  return html`
+    <mesh position=${[orb.x, orb.y, -0.6]} renderOrder=${0}>
+      <circleGeometry args=${[orb.radius, 160]} />
+      <meshBasicMaterial
+        color="#f3ede2"
+        transparent=${true}
+        opacity=${visibleOpacity}
+        depthWrite=${false}
+        depthTest=${false}
+        toneMapped=${false}
+      />
+    </mesh>
   `;
 }
 
@@ -1102,7 +1045,7 @@ function SettingsPanel({ controls, onChange, onReset }) {
 
 function PointillismCanvas({ sceneData, controls }) {
   return html`
-    <${Canvas}
+      <${Canvas}
       orthographic=${true}
       dpr=${[1, 2]}
       frameloop="always"
@@ -1112,6 +1055,7 @@ function PointillismCanvas({ sceneData, controls }) {
       onCreated=${({ gl }) => gl.setClearColor(0x000000, 0)}
     >
       <${CameraBounds} width=${sceneData.width} height=${sceneData.height} />
+      <${SolidOrb} orb=${sceneData.stipple.primaryOrb} opacity=${controls.orbSolidFill} />
       <${UnifiedPointCloud} data=${sceneData.stipple} controls=${controls} />
     </${Canvas}>
   `;
@@ -1126,6 +1070,7 @@ function App() {
   const generationControls = useMemo(() => pickGenerationControls(controls), [
     controls.foregroundCircleAmount,
     controls.sunPointPopulation,
+    controls.dotProtection,
   ]);
   const generationSignature = useMemo(() => {
     return JSON.stringify(GENERATION_CONTROL_KEYS.map((key) => [key, generationControls[key]]));
