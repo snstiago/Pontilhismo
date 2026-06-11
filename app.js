@@ -142,11 +142,13 @@ const DOT_FRAGMENT_SHADER = `
     float radius = length(centered);
     float mask = 1.0 - smoothstep(0.455, 0.5, radius);
 
-    if (mask <= 0.001) {
+    float alpha = mask * vAlpha;
+
+    if (alpha <= 0.001) {
       discard;
     }
 
-    gl_FragColor = vec4(uColor, mask);
+    gl_FragColor = vec4(uColor, alpha);
   }
 `;
 
@@ -162,7 +164,7 @@ const SIMPLE_VERTEX_SHADER = `
   void main() {
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mvPosition;
-    gl_PointSize = max(1.0, aSize * uPixelRatio);
+    gl_PointSize = aSize * uPixelRatio;
     vAlpha = aAlpha;
   }
 `;
@@ -836,6 +838,7 @@ function CameraBounds({ width, height }) {
 
 function UnifiedPointCloud({ data, controls }) {
   const pointsRef = useRef(null);
+  const continuityRef = useRef(null);
   const material = useMemo(() => createDotMaterial(SIMPLE_VERTEX_SHADER, "#e9dfd0"), []);
   const { gl } = useThree();
 
@@ -853,7 +856,18 @@ function UnifiedPointCloud({ data, controls }) {
     }
   }, [controls.dotColor, material]);
 
-  useFrame((state) => {
+  useEffect(() => {
+    continuityRef.current = {
+      previousX: new Float32Array(data.particles.length),
+    previousY: new Float32Array(data.particles.length),
+    previousSize: new Float32Array(data.particles.length),
+    previousAlpha: new Float32Array(data.particles.length),
+    renderedVisible: new Uint8Array(data.particles.length),
+    initialized: new Uint8Array(data.particles.length),
+  };
+  }, [data]);
+
+  useFrame((state, delta) => {
     if (!pointsRef.current) {
       return;
     }
@@ -863,6 +877,11 @@ function UnifiedPointCloud({ data, controls }) {
     const positions = geometry.attributes.position.array;
     const sizes = geometry.attributes.aSize.array;
     const alphas = geometry.attributes.aAlpha.array;
+    const continuity = continuityRef.current;
+    const safeDelta = clamp(delta || (1 / 60), 1 / 120, 1 / 24);
+    const halfWidth = data.width / 2;
+    const halfHeight = data.height / 2;
+    const viewportMargin = 24;
     const globalMotion = 0.16 + ((controls.globalMotion ?? 1) * 0.84);
     const globalSpeed = controls.globalSpeed ?? 1;
     const localMotionControl = 0.22 + ((controls.localMotion ?? 1) * 0.78);
@@ -926,6 +945,7 @@ function UnifiedPointCloud({ data, controls }) {
       let size = particle.size * sizeScale * orbSizeBoost;
       let alpha = particle.alpha;
       let travelSizeScale = 1;
+      let hadPreviousFrame = false;
 
       if ((particle.inwardCycleSpan ?? 0) > 0.001) {
         const inwardPhase = lerpCycle(
@@ -1044,10 +1064,50 @@ function UnifiedPointCloud({ data, controls }) {
           + (particle.inwardCycleNormalY * aliveCross * aliveRadius * 0.24 * lateralMotionScale);
       }
 
+      const orb = data.primaryOrb;
+      if (continuity && orb) {
+        const previousX = continuity.previousX[index];
+        const previousY = continuity.previousY[index];
+        hadPreviousFrame = continuity.initialized[index] === 1;
+
+        const previousInViewport = previousX > -halfWidth - viewportMargin
+          && previousX < halfWidth + viewportMargin
+          && previousY > -halfHeight - viewportMargin
+          && previousY < halfHeight + viewportMargin;
+        const currentInViewport = x > -halfWidth - viewportMargin
+          && x < halfWidth + viewportMargin
+          && y > -halfHeight - viewportMargin
+          && y < halfHeight + viewportMargin;
+        const previousInsideOrb = Math.hypot(previousX - orb.x, previousY - orb.y) < orb.radius * 0.9;
+        const currentInsideOrb = Math.hypot(x - orb.x, y - orb.y) < orb.radius * 0.9;
+        const jumpDistance = hadPreviousFrame ? Math.hypot(x - previousX, y - previousY) : 0;
+        const visibleJumpLimit = 86;
+
+        if (
+          hadPreviousFrame
+          && previousInViewport
+          && currentInViewport
+          && !previousInsideOrb
+          && !currentInsideOrb
+          && jumpDistance > visibleJumpLimit
+        ) {
+          const toOrbX = orb.x - previousX;
+          const toOrbY = orb.y - previousY;
+          const toOrbLength = Math.max(1, Math.hypot(toOrbX, toOrbY));
+          const continuityStep = Math.min(jumpDistance, 7 + (speedScale * 3) + (flowSpeedControl * 4));
+
+          x = previousX + ((toOrbX / toOrbLength) * continuityStep);
+          y = previousY + ((toOrbY / toOrbLength) * continuityStep);
+        }
+
+        continuity.previousX[index] = x;
+        continuity.previousY[index] = y;
+        continuity.initialized[index] = 1;
+      }
+
       positions[index * 3] = x;
       positions[(index * 3) + 1] = y;
       positions[(index * 3) + 2] = 0;
-      const orb = data.primaryOrb;
       const renderedOrbDistance = orb ? Math.hypot(x - orb.x, y - orb.y) : 9999;
       const renderedOrbEdge = orb ? renderedOrbDistance / orb.radius : 9999;
       const enteringSolidOrb = smoothstep(0.82, 0.62, renderedOrbEdge);
@@ -1056,8 +1116,45 @@ function UnifiedPointCloud({ data, controls }) {
       const finalSize = size * travelSizeScale * (1 + (contactMelt * 0.12));
       const journeySizeFloor = controls.globalDotSize * lerp(0.44, 0, enteringSolidOrb);
 
-      sizes[index] = Math.max(finalSize, journeySizeFloor) * mergeVisibility;
-      alphas[index] = alpha;
+      let nextSize = Math.max(finalSize, journeySizeFloor) * mergeVisibility;
+  let nextAlpha = alpha * mergeVisibility;
+
+  if (continuity && orb) {
+    const renderInViewport = x > -halfWidth - viewportMargin
+      && x < halfWidth + viewportMargin
+      && y > -halfHeight - viewportMargin
+      && y < halfHeight + viewportMargin;
+    const renderInsideOrb = renderedOrbDistance < orb.radius * 0.84;
+    const wantsVisible = nextAlpha > 0.001 && nextSize > 0.05;
+    const wasVisible = continuity.renderedVisible[index] === 1;
+
+    if (
+      hadPreviousFrame
+      && wasVisible
+      && renderInViewport
+      && !renderInsideOrb
+    ) {
+      const previousSize = continuity.previousSize[index];
+      const previousAlpha = continuity.previousAlpha[index];
+
+      if (previousSize > 0.05) {
+        nextSize = clamp(nextSize, previousSize * 0.84, previousSize * 1.2);
+      }
+
+      if (!wantsVisible) {
+        nextSize = Math.max(nextSize, previousSize * 0.9);
+      }
+
+      nextAlpha = Math.max(nextAlpha, previousAlpha * 0.97);
+    }
+
+    continuity.previousSize[index] = nextSize;
+        continuity.previousAlpha[index] = nextAlpha;
+        continuity.renderedVisible[index] = nextAlpha > 0.001 && nextSize > 0.05 ? 1 : 0;
+      }
+
+      sizes[index] = nextSize;
+      alphas[index] = nextAlpha;
     }
 
     geometry.attributes.position.needsUpdate = true;
