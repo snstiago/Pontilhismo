@@ -494,7 +494,7 @@ function getOffscreenDistanceFromPoint(x, y, directionX, directionY, width, heig
 }
 
 function addLivingMotionProperties(store, focus, width, height) {
-  const offscreenMargin = Math.max(18, focus.radius * 0.18);
+  const offscreenMargin = Math.max(28, focus.radius * 0.26);
 
   for (const particle of store.particles) {
     const dx = particle.baseX - focus.x;
@@ -972,7 +972,7 @@ function UnifiedPointCloud({ data, controls }) {
         const offscreen = Math.max(
           outer + (source * 0.35),
           particle.inwardCycleOffscreen ?? (outer + source)
-        ) * (0.74 + (respawnSpreadControl * 0.26));
+        ) * (1 + (respawnSpreadControl * 0.26));
         const fullArrival = (particle.inwardCycleToOrb ?? arrival)
           * motionAmount
           * (0.92 + (flowDistanceControl * 0.18));
@@ -999,6 +999,9 @@ function UnifiedPointCloud({ data, controls }) {
         const denseExitT = smoothstep(baseCrossT, Math.min(0.98, baseCrossT + 0.48), travelT);
         const denseExitScale = lerp(1, lerp(0.62, 0.24, denseExitAmount), denseTraveler * denseExitT * (1 - (edgeMask * 0.55)));
         travelSizeScale *= lerp(entryScale, 1, orbStaticMask) * denseExitScale;
+
+        const wrapFade = lerp(1, 1 - smoothstep(0.94, 1, travelT), activeFlowMask);
+        alpha *= wrapFade;
 
         const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
 
