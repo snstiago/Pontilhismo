@@ -507,7 +507,11 @@ function addLivingMotionProperties(store, focus, width, height) {
     const lowerOrbTexture = orbMask * (1 - topSolidMask);
     const sparseField = clamp(1 - particle.concentration, 0, 1);
     const aboveOrbCutoff = 1 - smoothstep(0, focus.radius * 0.5, dy);
-    const haloRegion = smoothstep(focus.radius * 2.2, focus.radius * 0.85, focusDistance);
+    const haloAngle = Math.min(0, Math.max(-Math.PI, Math.atan2(dy, dx)));
+    const haloNearX = focus.x + (Math.cos(haloAngle) * focus.radius);
+    const haloNearY = focus.y + (Math.sin(haloAngle) * focus.radius);
+    const distToLowerOrb = Math.hypot(particle.baseX - haloNearX, particle.baseY - haloNearY);
+    const haloRegion = smoothstep(focus.radius * 2.5, focus.radius * 0.15, distToLowerOrb);
     const cycleFieldMask = fieldMask * aboveOrbCutoff * lerp(0.12, 1, haloRegion);
     const wanderMask = (1 - aboveOrbCutoff) * fieldMask;
     const toFocusX = -dx / focusDistance;
@@ -619,8 +623,11 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.inwardCycleY = aimY / aimDist;
     particle.inwardCycleNormalX = -aimY / aimDist;
     particle.inwardCycleNormalY = aimX / aimDist;
+    const distToOrbSurface = Math.max(0, aimDist - focus.radius);
+    particle.inwardCycleImpactX = particle.baseX + (particle.inwardCycleX * distToOrbSurface);
+    particle.inwardCycleImpactY = particle.baseY + (particle.inwardCycleY * distToOrbSurface);
     particle.inwardCycleArc = arcSide * (0.4 + (hash01(particle.baseX, particle.baseY, 8221) * 0.6)) * (0.45 + (fieldMask * 1.35));
-    particle.inwardCycleAbsArc = arcSide * cycleFieldMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 0.07;
+    particle.inwardCycleAbsArc = arcSide * cycleFieldMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 0.15;
     particle.inwardCycleArrival = orbMask;
   }
 }
@@ -852,6 +859,10 @@ function CameraBounds({ width, height }) {
 function UnifiedPointCloud({ data, controls }) {
   const pointsRef = useRef(null);
   const continuityRef = useRef(null);
+  const impactsRef = useRef([]);
+  const lastImpactCycleRef = useRef(null);
+  const mousePosRef = useRef(null);
+  const mouseOffsetRef = useRef(null);
   const material = useMemo(() => createDotMaterial(SIMPLE_VERTEX_SHADER, "#e9dfd0"), []);
   const { gl } = useThree();
 
@@ -878,7 +889,28 @@ function UnifiedPointCloud({ data, controls }) {
     renderedVisible: new Uint8Array(data.particles.length),
     initialized: new Uint8Array(data.particles.length),
   };
+  impactsRef.current = [];
+  lastImpactCycleRef.current = new Int32Array(data.particles.length).fill(-1);
+  mouseOffsetRef.current = new Float32Array(data.particles.length * 2);
   }, [data]);
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const handleMouseMove = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      mousePosRef.current = {
+        x: ((e.clientX - rect.left) / rect.width - 0.5) * data.width,
+        y: -((e.clientY - rect.top) / rect.height - 0.5) * data.height,
+      };
+    };
+    const handleMouseLeave = () => { mousePosRef.current = null; };
+    canvas.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('mouseleave', handleMouseLeave);
+    return () => {
+      canvas.removeEventListener('mousemove', handleMouseMove);
+      canvas.removeEventListener('mouseleave', handleMouseLeave);
+    };
+  }, [gl, data]);
 
   useFrame((state, delta) => {
     if (!pointsRef.current) {
@@ -957,6 +989,9 @@ function UnifiedPointCloud({ data, controls }) {
       let y = particle.baseY + driftY + fieldY + hoverY + swayY + tideY;
       let size = particle.size * sizeScale * orbSizeBoost;
       let alpha = particle.alpha;
+      const densityBoost = smoothstep(0.04, 0.24, visualConcentration) * (1 - (particle.inwardCycleOrbMask ?? 0));
+      alpha *= lerp(1, 1.7, densityBoost);
+      size *= lerp(1, 1.5, densityBoost);
       let travelSizeScale = 1;
       let hadPreviousFrame = false;
 
@@ -1022,6 +1057,19 @@ function UnifiedPointCloud({ data, controls }) {
 
         x += (particle.inwardCycleX * pathPosition) + (particle.inwardCycleNormalX * (arc + absArc));
         y += (particle.inwardCycleY * pathPosition) + (particle.inwardCycleNormalY * (arc + absArc));
+
+        if (activeFlowMask > 0.8 && travelT > 0.88 && lastImpactCycleRef.current) {
+          const cycleNum = Math.floor(rawCycle);
+          if (lastImpactCycleRef.current[index] < cycleNum) {
+            const impacts = impactsRef.current;
+            const lastTime = impacts.length > 0 ? impacts[impacts.length - 1].time : -999;
+            if (elapsed - lastTime > 0.22) {
+              lastImpactCycleRef.current[index] = cycleNum;
+              impacts.push({ x: particle.inwardCycleImpactX ?? x, y: particle.inwardCycleImpactY ?? y, time: elapsed });
+              if (impacts.length > 6) impacts.shift();
+            }
+          }
+        }
       }
 
       if ((particle.livingRadiusX ?? 0) > 0.001) {
@@ -1088,6 +1136,47 @@ function UnifiedPointCloud({ data, controls }) {
           + (particle.inwardCycleNormalX * aliveCross * aliveRadius * 0.24 * lateralMotionScale);
         y += (particle.aliveDriftY * aliveWave * aliveRadius)
           + (particle.inwardCycleNormalY * aliveCross * aliveRadius * 0.24 * lateralMotionScale);
+      }
+
+      if (mouseOffsetRef.current) {
+        const oi = index * 2;
+        const mousePos = mousePosRef.current;
+        let targetOffX = 0;
+        let targetOffY = 0;
+        if (mousePos && (particle.inwardCycleOrbMask ?? 0) < 0.3 && data.primaryOrb) {
+          const mouseRadius = data.primaryOrb.radius * 0.65;
+          const toMouseX = mousePos.x - x;
+          const toMouseY = mousePos.y - y;
+          const dist = Math.hypot(toMouseX, toMouseY);
+          if (dist > 0.1 && dist < mouseRadius) {
+            const strength = (1 - (dist / mouseRadius)) * (1 - (dist / mouseRadius));
+            targetOffX = (toMouseX / dist) * strength * mouseRadius * 0.72;
+            targetOffY = (toMouseY / dist) * strength * mouseRadius * 0.72;
+          }
+        }
+        const hasTarget = targetOffX !== 0 || targetOffY !== 0;
+        const rate = hasTarget ? clamp(safeDelta * 7, 0, 0.45) : clamp(safeDelta * 4, 0, 0.35);
+        mouseOffsetRef.current[oi] = lerp(mouseOffsetRef.current[oi], targetOffX, rate);
+        mouseOffsetRef.current[oi + 1] = lerp(mouseOffsetRef.current[oi + 1], targetOffY, rate);
+        x += mouseOffsetRef.current[oi];
+        y += mouseOffsetRef.current[oi + 1];
+      }
+
+      if ((particle.inwardCycleOrbMask ?? 0) > 0.5 && impactsRef.current.length > 0 && data.primaryOrb) {
+        for (const impact of impactsRef.current) {
+          const age = elapsed - impact.time;
+          if (age < 0 || age > 0.65) continue;
+          const toPartX = x - impact.x;
+          const toPartY = y - impact.y;
+          const dist = Math.hypot(toPartX, toPartY);
+          const maxRadius = data.primaryOrb.radius * 0.52;
+          if (dist < 0.1 || dist > maxRadius) continue;
+          const spatialFade = (1 - (dist / maxRadius)) * (1 - (dist / maxRadius));
+          const timeFade = Math.sin((age / 0.65) * Math.PI);
+          const push = spatialFade * timeFade * data.primaryOrb.radius * 0.18;
+          x += (toPartX / dist) * push;
+          y += (toPartY / dist) * push;
+        }
       }
 
       const orb = data.primaryOrb;
