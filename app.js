@@ -506,6 +506,10 @@ function addLivingMotionProperties(store, focus, width, height) {
     const topSolidMask = orbMask * smoothstep(-0.08, 0.48, vertical);
     const lowerOrbTexture = orbMask * (1 - topSolidMask);
     const sparseField = clamp(1 - particle.concentration, 0, 1);
+    const aboveOrbCutoff = 1 - smoothstep(0, focus.radius * 0.5, dy);
+    const haloRegion = smoothstep(focus.radius * 2.2, focus.radius * 0.85, focusDistance);
+    const cycleFieldMask = fieldMask * aboveOrbCutoff * lerp(0.12, 1, haloRegion);
+    const wanderMask = (1 - aboveOrbCutoff) * fieldMask;
     const toFocusX = -dx / focusDistance;
     const toFocusY = -dy / focusDistance;
     const outwardX = dx / focusDistance;
@@ -524,12 +528,12 @@ function addLivingMotionProperties(store, focus, width, height) {
     const fullArrivalDistance = Math.max(0, focusDistance - (focus.radius * 0.7))
       + (focus.radius * (0.16 + (hash01(particle.baseX, particle.baseY, 8107) * 0.08)));
     const localConveyorSpan = (
-      (fieldMask * (9 + (sparseField * 17) + (particle.concentration * 7) + (clamp(distanceToOrbEdge, 0, focus.radius * 2.6) * 0.032)))
+      (cycleFieldMask * (9 + (sparseField * 17) + (particle.concentration * 7) + (clamp(distanceToOrbEdge, 0, focus.radius * 2.6) * 0.032)))
         + (lowerOrbTexture * 4.6)
         + (topSolidMask * 1.35)
     ) * (0.78 + (pathNoise * 0.32));
     const arrivalSpan = (
-      (fieldMask * clamp((distanceToOrbEdge * 0.34) + 12, 18, focus.radius * 1.24))
+      (cycleFieldMask * clamp((distanceToOrbEdge * 0.34) + 12, 18, focus.radius * 1.24))
         + (lowerOrbTexture * 5.4)
         + (topSolidMask * 1.8)
     ) * (0.82 + (hash01(particle.baseX, particle.baseY, 8111) * 0.28));
@@ -572,6 +576,10 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.microSpeed = 0.2 + (hash01(particle.baseX, particle.baseY, 8243) * 0.18);
     particle.microRadiusX = 0.34 + (fieldMask * (0.34 + (sparseField * 0.44))) + (lowerOrbTexture * 0.16);
     particle.microRadiusY = 0.28 + (fieldMask * (0.26 + (sparseField * 0.32))) + (lowerOrbTexture * 0.14);
+    particle.wanderPhase = hash01(particle.baseX, particle.baseY, 9001) * Math.PI * 2;
+    particle.wanderSpeed = 0.80 + (hash01(particle.baseX, particle.baseY, 9011) * 0.50);
+    particle.wanderRadiusX = wanderMask * wanderMask * wanderMask * (15 + (hash01(particle.baseX, particle.baseY, 9021) * 15));
+    particle.wanderRadiusY = wanderMask * wanderMask * wanderMask * (14 + (hash01(particle.baseX, particle.baseY, 9031) * 13));
     particle.alivePhase = coherentPhase + (hash01(particle.baseX, particle.baseY, 8251) * 0.24);
     particle.aliveSpeed = 0.18 + (fieldMask * 0.08) + (sparseField * 0.035);
     particle.aliveRadius = 1.18 + (fieldMask * 0.86) + (sparseField * 0.42) + (lowerOrbTexture * 0.32);
@@ -603,11 +611,16 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.inwardCycleSource = localConveyorSpan * (0.18 + (hash01(particle.baseX, particle.baseY, 8217) * 0.18));
     particle.inwardCycleArrivalSpan = arrivalSpan;
     particle.inwardCycleMerge = 1.8 + (fieldMask * 4.8) + (lowerOrbTexture * 1.6);
-    particle.inwardCycleX = toFocusX;
-    particle.inwardCycleY = toFocusY;
-    particle.inwardCycleNormalX = tangentX;
-    particle.inwardCycleNormalY = tangentY;
-    particle.inwardCycleArc = (hash01(particle.baseX, particle.baseY, 8221) - 0.5) * (0.45 + (fieldMask * 1.35));
+    const aimX = -dx;
+    const aimY = focus.radius - dy;
+    const aimDist = Math.sqrt((aimX * aimX) + (aimY * aimY));
+    const arcSide = (dx > 0) ? -1 : (dx < 0 ? 1 : 0);
+    particle.inwardCycleX = aimX / aimDist;
+    particle.inwardCycleY = aimY / aimDist;
+    particle.inwardCycleNormalX = -aimY / aimDist;
+    particle.inwardCycleNormalY = aimX / aimDist;
+    particle.inwardCycleArc = arcSide * (0.4 + (hash01(particle.baseX, particle.baseY, 8221) * 0.6)) * (0.45 + (fieldMask * 1.35));
+    particle.inwardCycleAbsArc = arcSide * cycleFieldMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 0.07;
     particle.inwardCycleArrival = orbMask;
   }
 }
@@ -1001,12 +1014,14 @@ function UnifiedPointCloud({ data, controls }) {
         travelSizeScale *= lerp(entryScale, 1, orbStaticMask) * denseExitScale;
 
         const wrapFade = lerp(1, 1 - smoothstep(0.94, 1, travelT), activeFlowMask);
-        alpha *= wrapFade;
+        const entryFade = lerp(1, smoothstep(0, 0.05, travelT), activeFlowMask);
+        alpha *= wrapFade * entryFade;
 
         const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
+        const absArc = (particle.inwardCycleAbsArc ?? 0) * arcT;
 
-        x += (particle.inwardCycleX * pathPosition) + (particle.inwardCycleNormalX * arc);
-        y += (particle.inwardCycleY * pathPosition) + (particle.inwardCycleNormalY * arc);
+        x += (particle.inwardCycleX * pathPosition) + (particle.inwardCycleNormalX * (arc + absArc));
+        y += (particle.inwardCycleY * pathPosition) + (particle.inwardCycleNormalY * (arc + absArc));
       }
 
       if ((particle.livingRadiusX ?? 0) > 0.001) {
@@ -1051,6 +1066,14 @@ function UnifiedPointCloud({ data, controls }) {
 
         x += lerp(microX, microParallelX, spacingCoherence * 0.62) * microScale;
         y += lerp(microY, microParallelY, spacingCoherence * 0.62) * microScale;
+      }
+
+      if ((particle.wanderRadiusX ?? 0) > 0.001) {
+        const wanderT = (elapsed * particle.wanderSpeed) + particle.wanderPhase;
+        const wanderScale = (0.68 + (globalMotion * 0.32)) * (0.76 + (localMotionControl * 0.34));
+
+        x += Math.sin(wanderT) * particle.wanderRadiusX * wanderScale;
+        y += Math.cos((wanderT * 0.87) + particle.wanderPhase) * particle.wanderRadiusY * wanderScale;
       }
 
       if ((particle.aliveRadius ?? 0) > 0.001) {
