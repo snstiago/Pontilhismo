@@ -733,6 +733,7 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
       const speed = 0.14 + ((1 - concentration) * 0.2) + (hash01(sampleX, sampleY, 149) * 0.028);
       const hoverSpeed = 0.18 + (hash01(sampleX, sampleY, 157) * 0.16);
 
+      const originalIdx = store.particles.length;
       pushParticle(store, {
         baseX: worldX,
         baseY: worldY,
@@ -745,6 +746,27 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
         phase: hash01(sampleX, sampleY, 113) * Math.PI * 2,
         speed,
       });
+
+      // Landscape-fill shadow: invisible while original is in place,
+      // fades in as original is attracted away. Phase-shifted so it
+      // never looks like a static twin — it's a different moment in
+      // the oscillation cycle.
+      if (size > 1.4 && primaryOrbMask < 0.05) {
+        pushParticle(store, {
+          baseX: worldX,
+          baseY: worldY,
+          size: size * 0.88,
+          alpha,
+          amplitude,
+          hoverRadius,
+          hoverSpeed,
+          concentration,
+          phase: hash01(sampleX, sampleY, 113) * Math.PI * 2 + Math.PI * 0.7,
+          speed: speed * 1.05,
+          isMouseShadow: true,
+          shadowOriginalIndex: originalIdx,
+        });
+      }
 
       function pushCompanion(seedOffset, radiusScale, alphaScaleValue, companionSizeScale) {
         const companionAngle = hash01(sampleX, sampleY, 181 + seedOffset) * Math.PI * 2;
@@ -790,6 +812,8 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
   const finalized = finalizeParticleStore(store);
   finalized.focus = focus;
   finalized.primaryOrb = focus;
+  finalized.width = width;
+  finalized.height = height;
   return finalized;
 }
 
@@ -863,6 +887,10 @@ function UnifiedPointCloud({ data, controls }) {
   const lastImpactCycleRef = useRef(null);
   const mousePosRef = useRef(null);
   const mouseOffsetRef = useRef(null);
+  const mouseVelRef = useRef(null);
+  const mouseStateRef = useRef({ stillness: 0, prevX: null, prevY: null });
+  const smoothMouseRef = useRef(null);
+  const elapsedRef = useRef(0);
   const material = useMemo(() => createDotMaterial(SIMPLE_VERTEX_SHADER, "#e9dfd0"), []);
   const { gl } = useThree();
 
@@ -892,23 +920,27 @@ function UnifiedPointCloud({ data, controls }) {
   impactsRef.current = [];
   lastImpactCycleRef.current = new Int32Array(data.particles.length).fill(-1);
   mouseOffsetRef.current = new Float32Array(data.particles.length * 2);
+  mouseVelRef.current = new Float32Array(data.particles.length * 2);
   }, [data]);
 
   useEffect(() => {
     const canvas = gl.domElement;
     const handleMouseMove = (e) => {
       const rect = canvas.getBoundingClientRect();
+      const inCanvas = e.clientX >= rect.left && e.clientX <= rect.right &&
+                       e.clientY >= rect.top && e.clientY <= rect.bottom;
+      if (!inCanvas) { mousePosRef.current = null; return; }
       mousePosRef.current = {
         x: ((e.clientX - rect.left) / rect.width - 0.5) * data.width,
         y: -((e.clientY - rect.top) / rect.height - 0.5) * data.height,
       };
     };
     const handleMouseLeave = () => { mousePosRef.current = null; };
-    canvas.addEventListener('mousemove', handleMouseMove);
-    canvas.addEventListener('mouseleave', handleMouseLeave);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseleave', handleMouseLeave);
     return () => {
-      canvas.removeEventListener('mousemove', handleMouseMove);
-      canvas.removeEventListener('mouseleave', handleMouseLeave);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseleave', handleMouseLeave);
     };
   }, [gl, data]);
 
@@ -917,13 +949,48 @@ function UnifiedPointCloud({ data, controls }) {
       return;
     }
 
-    const elapsed = state.clock.elapsedTime;
+    const safeDelta = clamp(delta || (1 / 60), 1 / 120, 1 / 24);
+    elapsedRef.current += safeDelta;
+    const elapsed = elapsedRef.current;
+
+    const mousePos = mousePosRef.current;
+    const mouseState = mouseStateRef.current;
+    if (mousePos) {
+      const moved = (mouseState.prevX !== null)
+        ? Math.hypot(mousePos.x - mouseState.prevX, mousePos.y - mouseState.prevY)
+        : 0;
+      mouseState.prevX = mousePos.x;
+      mouseState.prevY = mousePos.y;
+      mouseState.stillness = moved > 3
+        ? 0
+        : Math.min(1, mouseState.stillness + safeDelta * 40);
+    } else {
+      mouseState.stillness = 0;
+      mouseState.prevX = null;
+      mouseState.prevY = null;
+    }
+    const stillness = mouseState.stillness;
+
+    if (mousePos) {
+      if (!smoothMouseRef.current) {
+        smoothMouseRef.current = { x: mousePos.x, y: mousePos.y, vx: 0, vy: 0 };
+      } else {
+        const sm = smoothMouseRef.current;
+        sm.vx = sm.vx * 0.40 + (mousePos.x - sm.x) * 0.09;
+        sm.vy = sm.vy * 0.40 + (mousePos.y - sm.y) * 0.09;
+        sm.x += sm.vx;
+        sm.y += sm.vy;
+      }
+    } else {
+      smoothMouseRef.current = null;
+    }
+    const smoothMouse = smoothMouseRef.current;
+
     const geometry = pointsRef.current.geometry;
     const positions = geometry.attributes.position.array;
     const sizes = geometry.attributes.aSize.array;
     const alphas = geometry.attributes.aAlpha.array;
     const continuity = continuityRef.current;
-    const safeDelta = clamp(delta || (1 / 60), 1 / 120, 1 / 24);
     const halfWidth = data.width / 2;
     const halfHeight = data.height / 2;
     const viewportMargin = 24;
@@ -1140,26 +1207,70 @@ function UnifiedPointCloud({ data, controls }) {
 
       if (mouseOffsetRef.current) {
         const oi = index * 2;
-        const mousePos = mousePosRef.current;
-        let targetOffX = 0;
-        let targetOffY = 0;
-        if (mousePos && (particle.inwardCycleOrbMask ?? 0) < 0.3 && data.primaryOrb) {
-          const mouseRadius = data.primaryOrb.radius * 0.65;
-          const toMouseX = mousePos.x - x;
-          const toMouseY = mousePos.y - y;
-          const dist = Math.hypot(toMouseX, toMouseY);
+        let offX = mouseOffsetRef.current[oi];
+        let offY = mouseOffsetRef.current[oi + 1];
+        let velX = mouseVelRef.current[oi];
+        let velY = mouseVelRef.current[oi + 1];
+
+        if (smoothMouse && (particle.inwardCycleOrbMask ?? 0) < 0.3 && !particle.isMouseShadow && data.primaryOrb) {
+          const mouseRadius = data.primaryOrb.radius * 3.0;
+          // Per-particle stable random jitter using base position as hash seed
+          const jSeed1 = Math.sin(particle.baseX * 127.1 + particle.baseY * 311.7) * 43758.5453;
+          const jSeed2 = Math.sin(particle.baseX * 269.5 + particle.baseY * 183.3) * 43758.5453;
+          const jAngle = (jSeed1 - Math.floor(jSeed1)) * Math.PI * 2;
+          const jR = (jSeed2 - Math.floor(jSeed2)) * mouseRadius * 0.10;
+          const tx = smoothMouse.x + Math.cos(jAngle) * jR;
+          const ty = smoothMouse.y + Math.sin(jAngle) * jR;
+          const ax = x + offX;
+          const ay = y + offY;
+          const dx = tx - ax;
+          const dy = ty - ay;
+          const dist = Math.hypot(dx, dy);
           if (dist > 0.1 && dist < mouseRadius) {
-            const strength = (1 - (dist / mouseRadius)) * (1 - (dist / mouseRadius));
-            targetOffX = (toMouseX / dist) * strength * mouseRadius * 0.72;
-            targetOffY = (toMouseY / dist) * strength * mouseRadius * 0.72;
+            const t = 1 - dist / mouseRadius;
+            const force = t * t * 0.00030 * mouseRadius;
+            velX += (dx / dist) * force;
+            velY += (dy / dist) * force;
           }
+          velX *= 0.91;
+          velY *= 0.91;
+          offX += velX;
+          offY += velY;
+          // Small cap to prevent runaway accumulation
+          const maxOff = mouseRadius * 0.20;
+          const offDist = Math.hypot(offX, offY);
+          if (offDist > maxOff) {
+            const s = maxOff / offDist;
+            offX *= s;
+            offY *= s;
+            velX *= 0.3;
+            velY *= 0.3;
+          }
+        } else {
+          // No mouse: kill velocity fast, decay offset back to natural position
+          velX *= 0.75;
+          velY *= 0.75;
+          offX += velX;
+          offY += velY;
+          offX *= 0.88;
+          offY *= 0.88;
         }
-        const hasTarget = targetOffX !== 0 || targetOffY !== 0;
-        const rate = hasTarget ? clamp(safeDelta * 7, 0, 0.45) : clamp(safeDelta * 4, 0, 0.35);
-        mouseOffsetRef.current[oi] = lerp(mouseOffsetRef.current[oi], targetOffX, rate);
-        mouseOffsetRef.current[oi + 1] = lerp(mouseOffsetRef.current[oi + 1], targetOffY, rate);
-        x += mouseOffsetRef.current[oi];
-        y += mouseOffsetRef.current[oi + 1];
+
+        mouseOffsetRef.current[oi] = offX;
+        mouseOffsetRef.current[oi + 1] = offY;
+        mouseVelRef.current[oi] = velX;
+        mouseVelRef.current[oi + 1] = velY;
+        x += offX;
+        y += offY;
+      }
+
+      // Shadow fade-in: invisible when original is in place, fades in as original moves away
+      if (particle.isMouseShadow && particle.shadowOriginalIndex !== undefined && mouseOffsetRef.current && data.primaryOrb) {
+        const origOI = particle.shadowOriginalIndex * 2;
+        const origOffDist = Math.hypot(mouseOffsetRef.current[origOI], mouseOffsetRef.current[origOI + 1]);
+        const fadeStart = data.primaryOrb.radius * 0.04;
+        const fadeEnd = data.primaryOrb.radius * 0.22;
+        alpha *= smoothstep(fadeStart, fadeEnd, origOffDist);
       }
 
       if ((particle.inwardCycleOrbMask ?? 0) > 0.5 && impactsRef.current.length > 0 && data.primaryOrb) {
@@ -1180,6 +1291,7 @@ function UnifiedPointCloud({ data, controls }) {
       }
 
       const orb = data.primaryOrb;
+      let frameSpeed = 0;
       if (continuity && orb) {
         const previousX = continuity.previousX[index];
         const previousY = continuity.previousY[index];
@@ -1215,6 +1327,7 @@ function UnifiedPointCloud({ data, controls }) {
           y = previousY + ((toOrbY / toOrbLength) * continuityStep);
         }
 
+        if (hadPreviousFrame) frameSpeed = Math.hypot(x - previousX, y - previousY);
         continuity.previousX[index] = x;
         continuity.previousY[index] = y;
         continuity.initialized[index] = 1;
@@ -1266,6 +1379,15 @@ function UnifiedPointCloud({ data, controls }) {
     continuity.previousSize[index] = nextSize;
         continuity.previousAlpha[index] = nextAlpha;
         continuity.renderedVisible[index] = nextAlpha > 0.001 && nextSize > 0.05 ? 1 : 0;
+      }
+
+      // The fast "stream" only shows up on hover: pulling the slow landscape
+      // dots toward the cursor uncovers the fast conveyor dots that are normally
+      // camouflaged. So ONLY while the cursor is present, fade the dots that are
+      // moving fast — the calm field stays put, the exposed streaks dissolve.
+      // At rest (no cursor) this is fully inert, so normal dots are untouched.
+      if (smoothMouse) {
+        nextAlpha *= 1 - smoothstep(2.4, 4.0, frameSpeed);
       }
 
       sizes[index] = nextSize;
