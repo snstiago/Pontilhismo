@@ -1272,10 +1272,12 @@ function UnifiedPointCloud({ data, controls }) {
       }
 
       // Mouse offset. A dot is attracted toward the cursor; when the cursor
-      // leaves, the displacement does NOT snap back and makes no deliberate move
-      // — it just dissolves very slowly so the particle drifts on with its own
-      // natural motion, as if it had never been touched. mouseOffsetDelta* keeps
-      // the streak fade blind to this motion.
+      // leaves, the displacement is FROZEN — the dot never reverses back, it just
+      // keeps flowing forward to the orb (the whole piece is one constant flow to
+      // the orb, there are no fixed homes to return to). The frozen offset is
+      // cleared only once the dot is hidden (merged into the orb or recycled
+      // off-screen), so the reset is never seen. mouseOffsetDelta* keeps the
+      // streak fade blind to this motion.
       let mouseOffsetDeltaX = 0;
       let mouseOffsetDeltaY = 0;
       if (mouseOffsetRef.current) {
@@ -1286,10 +1288,6 @@ function UnifiedPointCloud({ data, controls }) {
         const startOffY = offY;
         let velX = mouseVelRef.current[oi];
         let velY = mouseVelRef.current[oi + 1];
-        // How slowly the displacement dissolves once the cursor is gone: closer
-        // to 1 = slower (takes several seconds), so it reads as natural drift
-        // rather than a return.
-        const releaseDissolve = 0.985;
 
         if (smoothMouse && (particle.inwardCycleOrbMask ?? 0) < 0.3 && !particle.isMouseShadow && data.primaryOrb) {
           const mouseRadius = data.primaryOrb.radius * 3.0;
@@ -1328,19 +1326,35 @@ function UnifiedPointCloud({ data, controls }) {
               velY *= 0.3;
             }
           } else {
-            // Out of reach: let go. Drop the momentum and let the displacement
-            // dissolve very slowly into the particle's natural motion.
+            // Out of reach: let go. Stop attracting and freeze the displacement so
+            // the dot only ever keeps flowing forward to the orb, never backward.
+            // Clear the frozen offset only where it can't be seen (deep in the orb
+            // or off-screen).
             velX = 0;
             velY = 0;
-            offX *= releaseDissolve;
-            offY *= releaseDissolve;
+            const orbEdge = Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) / data.primaryOrb.radius;
+            const offscreen = Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40;
+            if (orbEdge < 0.6 || offscreen) {
+              offX *= 0.8;
+              offY *= 0.8;
+            }
           }
         } else {
-          // No cursor: same slow dissolve, no deliberate return.
+          // No cursor (or not eligible): same forward-only release — freeze and
+          // clear only where hidden.
           velX = 0;
           velY = 0;
-          offX *= releaseDissolve;
-          offY *= releaseDissolve;
+          if (data.primaryOrb) {
+            const orbEdge = Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) / data.primaryOrb.radius;
+            const offscreen = Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40;
+            if (orbEdge < 0.6 || offscreen) {
+              offX *= 0.8;
+              offY *= 0.8;
+            }
+          } else {
+            offX *= 0.8;
+            offY *= 0.8;
+          }
         }
 
         mouseOffsetRef.current[oi] = offX;
@@ -1435,7 +1449,7 @@ function UnifiedPointCloud({ data, controls }) {
       // size; it grows back as it returns.
       if (densityBoost > 0.001) {
         const fromHome = Math.hypot(x - particle.baseX, y - particle.baseY);
-        const homeShrink = smoothstep(8, 70, fromHome);
+        const homeShrink = smoothstep(8, 50, fromHome);
         size *= lerp(1, 1 / lerp(1, 1.5, densityBoost), homeShrink);
       }
       const enteringSolidOrb = smoothstep(0.82, 0.62, renderedOrbEdge);
