@@ -891,6 +891,15 @@ function UnifiedPointCloud({ data, controls }) {
   const mouseStateRef = useRef({ stillness: 0, prevX: null, prevY: null });
   const smoothMouseRef = useRef(null);
   const elapsedRef = useRef(0);
+  const burstRef = useRef([]);
+  const burstGeoRef = useRef(null);
+  const pressingRef = useRef(false);
+  const emitAccumRef = useRef(0);
+  const burstBuf = useMemo(() => ({
+    positions: new Float32Array(4000 * 3),
+    sizes: new Float32Array(4000),
+    alphas: new Float32Array(4000),
+  }), []);
   const material = useMemo(() => createDotMaterial(SIMPLE_VERTEX_SHADER, "#e9dfd0"), []);
   const { gl } = useThree();
 
@@ -936,11 +945,44 @@ function UnifiedPointCloud({ data, controls }) {
       };
     };
     const handleMouseLeave = () => { mousePosRef.current = null; };
+    // Hold the mouse down = "give your energy": while pressed, a soft trickle of
+    // dots flows from the cursor into the orb. Emission happens in useFrame;
+    // here we only track press state and the press position.
+    const handleMouseDown = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+      mousePosRef.current = {
+        x: ((e.clientX - rect.left) / rect.width - 0.5) * data.width,
+        y: -((e.clientY - rect.top) / rect.height - 0.5) * data.height,
+      };
+      pressingRef.current = true;
+    };
+    const handleMouseUp = () => {
+      pressingRef.current = false;
+      const orb = data.primaryOrb;
+      if (!orb) return;
+      // Release: fling every pooled (charging) dot into the orb.
+      const burst = burstRef.current;
+      for (let i = 0; i < burst.length; i += 1) {
+        const p = burst[i];
+        if (p.state === 0) {
+          p.state = 1;
+          const ta = Math.random() * Math.PI * 2;
+          const tr = Math.sqrt(Math.random()) * orb.radius * 0.6;
+          p.tx = orb.x + (Math.cos(ta) * tr);
+          p.ty = orb.y + (Math.sin(ta) * tr);
+        }
+      }
+    };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseleave', handleMouseLeave);
+    canvas.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mouseup', handleMouseUp);
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseleave', handleMouseLeave);
+      canvas.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [gl, data]);
 
@@ -1060,6 +1102,7 @@ function UnifiedPointCloud({ data, controls }) {
       alpha *= lerp(1, 1.7, densityBoost);
       size *= lerp(1, 1.5, densityBoost);
       let travelSizeScale = 1;
+      let wrapSizeMul = 1;
       let hadPreviousFrame = false;
 
       if ((particle.inwardCycleSpan ?? 0) > 0.001) {
@@ -1115,9 +1158,13 @@ function UnifiedPointCloud({ data, controls }) {
         const denseExitScale = lerp(1, lerp(0.62, 0.24, denseExitAmount), denseTraveler * denseExitT * (1 - (edgeMask * 0.55)));
         travelSizeScale *= lerp(entryScale, 1, orbStaticMask) * denseExitScale;
 
-        const wrapFade = lerp(1, 1 - smoothstep(0.94, 1, travelT), activeFlowMask);
+        // End of the cycle: instead of blinking out, a big dot eases down to a
+        // normal dot's size; only the very last sliver fades, to hide the recycle.
+        const wrapT = smoothstep(0.8, 1, travelT) * activeFlowMask;
+        wrapSizeMul = lerp(1, 1 / lerp(1, 1.5, densityBoost), wrapT);
         const entryFade = lerp(1, smoothstep(0, 0.05, travelT), activeFlowMask);
-        alpha *= wrapFade * entryFade;
+        const tailFade = lerp(1, 1 - smoothstep(0.93, 1, travelT), activeFlowMask);
+        alpha *= entryFade * tailFade;
 
         const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
         const absArc = (particle.inwardCycleAbsArc ?? 0) * arcT;
@@ -1226,34 +1273,44 @@ function UnifiedPointCloud({ data, controls }) {
           const dx = tx - ax;
           const dy = ty - ay;
           const dist = Math.hypot(dx, dy);
-          if (dist > 0.1 && dist < mouseRadius) {
-            const t = 1 - dist / mouseRadius;
-            const force = t * t * 0.00030 * mouseRadius;
-            velX += (dx / dist) * force;
-            velY += (dy / dist) * force;
-          }
-          velX *= 0.91;
-          velY *= 0.91;
-          offX += velX;
-          offY += velY;
-          // Small cap to prevent runaway accumulation
-          const maxOff = mouseRadius * 0.20;
-          const offDist = Math.hypot(offX, offY);
-          if (offDist > maxOff) {
-            const s = maxOff / offDist;
-            offX *= s;
-            offY *= s;
-            velX *= 0.3;
-            velY *= 0.3;
+          if (dist < mouseRadius) {
+            // Within reach: attract toward the cursor.
+            if (dist > 0.1) {
+              const t = 1 - dist / mouseRadius;
+              const force = t * t * 0.00030 * mouseRadius;
+              velX += (dx / dist) * force;
+              velY += (dy / dist) * force;
+            }
+            velX *= 0.91;
+            velY *= 0.91;
+            offX += velX;
+            offY += velY;
+            // Small cap to prevent runaway accumulation
+            const maxOff = mouseRadius * 0.20;
+            const offDist = Math.hypot(offX, offY);
+            if (offDist > maxOff) {
+              const s = maxOff / offDist;
+              offX *= s;
+              offY *= s;
+              velX *= 0.3;
+              velY *= 0.3;
+            }
+          } else {
+            // Out of reach (cursor moved elsewhere): drop the momentum and ease
+            // back home, so dots don't keep coasting away after being left behind.
+            velX = 0;
+            velY = 0;
+            offX *= 0.9;
+            offY *= 0.9;
           }
         } else {
-          // No mouse: kill velocity fast, decay offset back to natural position
-          velX *= 0.75;
-          velY *= 0.75;
-          offX += velX;
-          offY += velY;
-          offX *= 0.88;
-          offY *= 0.88;
+          // No mouse: drop the leftover velocity (otherwise it keeps shoving the
+          // dot away from home for a few frames first — the "wonky" return) and
+          // just ease the offset smoothly back to its natural position.
+          velX = 0;
+          velY = 0;
+          offX *= 0.9;
+          offY *= 0.9;
         }
 
         mouseOffsetRef.current[oi] = offX;
@@ -1338,13 +1395,27 @@ function UnifiedPointCloud({ data, controls }) {
       positions[(index * 3) + 2] = 0;
       const renderedOrbDistance = orb ? Math.hypot(x - orb.x, y - orb.y) : 9999;
       const renderedOrbEdge = orb ? renderedOrbDistance / orb.radius : 9999;
+
+      // A big landscape dot is only big at its original spot. The further it
+      // moves from that spot — pulled by the cursor OR carried by its own
+      // motion, hover or not — the more it transitions to a normal dot size, so
+      // big dots never end up as big blobs away from home. At home it is full
+      // size; it grows back as it returns.
+      if (densityBoost > 0.001) {
+        const fromHome = Math.hypot(x - particle.baseX, y - particle.baseY);
+        const homeShrink = smoothstep(8, 70, fromHome);
+        size *= lerp(1, 1 / lerp(1, 1.5, densityBoost), homeShrink);
+      }
       const enteringSolidOrb = smoothstep(0.82, 0.62, renderedOrbEdge);
-      const contactMelt = smoothstep(1.05, 0.98, renderedOrbEdge) * (1 - smoothstep(0.95, 0.86, renderedOrbEdge));
+      // Subtle, coherent merge: every dot swells a little as it reaches the orb
+      // surface, so it spreads and dissolves into the sphere (same colour) like a
+      // droplet instead of vanishing at a hard edge. The orb itself is untouched.
+      const contactMelt = smoothstep(1.14, 0.98, renderedOrbEdge) * (1 - smoothstep(0.95, 0.84, renderedOrbEdge));
       const mergeVisibility = 1 - ((controls.orbSolidFill ?? 0) * enteringSolidOrb);
-      const finalSize = size * travelSizeScale * (1 + (contactMelt * 0.12));
+      const finalSize = size * travelSizeScale * (1 + (contactMelt * 0.35));
       const journeySizeFloor = controls.globalDotSize * lerp(0.44, 0, enteringSolidOrb);
 
-      let nextSize = Math.max(finalSize, journeySizeFloor) * mergeVisibility;
+      let nextSize = Math.max(finalSize, journeySizeFloor) * mergeVisibility * wrapSizeMul;
   let nextAlpha = alpha * mergeVisibility;
 
   if (continuity && orb) {
@@ -1397,17 +1468,113 @@ function UnifiedPointCloud({ data, controls }) {
     geometry.attributes.position.needsUpdate = true;
     geometry.attributes.aSize.needsUpdate = true;
     geometry.attributes.aAlpha.needsUpdate = true;
+
+    // Genki Dama. Hold the mouse: energy dots spawn around the cursor and are
+    // SUCKED into it, pooling there (the charge). Release (mouseup): every
+    // pooled dot is flung into the orb. All movement is at a calm, constant
+    // speed — the same gentle pace as the rest of the field.
+    const CHARGE_SPEED = 95;   // px/sec — suction toward the cursor
+    const RELEASE_SPEED = 200; // px/sec — the throw toward the orb
+    const POOL_R = 16;
+    if (pressingRef.current && mousePos && data.primaryOrb) {
+      const burstList = burstRef.current;
+      emitAccumRef.current += safeDelta * 34; // ~34 dots/sec — a gentle stream
+      while (emitAccumRef.current >= 1 && burstList.length < 4000) {
+        emitAccumRef.current -= 1;
+        const a = Math.random() * Math.PI * 2;
+        const r = 55 + (Math.random() * 115); // spawn ring around the cursor
+        burstList.push({
+          x: mousePos.x + (Math.cos(a) * r),
+          y: mousePos.y + (Math.sin(a) * r),
+          tx: 0,
+          ty: 0,
+          state: 0, // 0 = charging toward cursor, 1 = released toward orb
+          size: 2.2 + (Math.random() * 2.6),
+          age: 0,
+        });
+      }
+    } else {
+      emitAccumRef.current = 0;
+    }
+
+    const burst = burstRef.current;
+    if (burst.length > 0 && burstGeoRef.current && data.primaryOrb) {
+      const orb = data.primaryOrb;
+      const bpos = burstBuf.positions;
+      const bsize = burstBuf.sizes;
+      const balpha = burstBuf.alphas;
+      let bw = 0;
+      for (let i = 0; i < burst.length; i += 1) {
+        const p = burst[i];
+        p.age += safeDelta;
+        const charging = p.state === 0;
+        const spd = charging ? CHARGE_SPEED : RELEASE_SPEED;
+        let tgx;
+        let tgy;
+        if (charging) {
+          tgx = mousePos ? mousePos.x : p.x;
+          tgy = mousePos ? mousePos.y : p.y;
+        } else {
+          tgx = p.tx;
+          tgy = p.ty;
+        }
+        const dx = tgx - p.x;
+        const dy = tgy - p.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (charging && d < POOL_R) {
+          // pooled at the cursor: gently swirl in place (charged energy)
+          const ang = Math.atan2(dy, dx) + 1.4;
+          p.x += Math.cos(ang) * spd * 0.5 * safeDelta;
+          p.y += Math.sin(ang) * spd * 0.5 * safeDelta;
+        } else {
+          const step = Math.min(d, spd * safeDelta);
+          p.x += (dx / d) * step;
+          p.y += (dy / d) * step;
+        }
+        let alpha = smoothstep(0, 0.18, p.age);
+        if (!charging) {
+          const dOrb = Math.hypot(orb.x - p.x, orb.y - p.y);
+          if (dOrb < orb.radius * 0.34) continue; // merged into the orb
+          alpha *= smoothstep(orb.radius * 0.34, orb.radius * 0.85, dOrb);
+        }
+        bpos[bw * 3] = p.x;
+        bpos[(bw * 3) + 1] = p.y;
+        bpos[(bw * 3) + 2] = 0;
+        bsize[bw] = p.size;
+        balpha[bw] = alpha;
+        burst[bw] = p;
+        bw += 1;
+      }
+      burst.length = bw;
+      const bg = burstGeoRef.current;
+      bg.attributes.position.needsUpdate = true;
+      bg.attributes.aSize.needsUpdate = true;
+      bg.attributes.aAlpha.needsUpdate = true;
+      bg.setDrawRange(0, bw);
+    } else if (burstGeoRef.current) {
+      burstGeoRef.current.setDrawRange(0, 0);
+    }
   });
 
   return html`
-    <points ref=${pointsRef} frustumCulled=${false} renderOrder=${2}>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args=${[data.positions, 3]} />
-        <bufferAttribute attach="attributes-aSize" args=${[data.sizes, 1]} />
-        <bufferAttribute attach="attributes-aAlpha" args=${[data.alphas, 1]} />
-      </bufferGeometry>
-      <primitive object=${material} attach="material" />
-    </points>
+    <group>
+      <points ref=${pointsRef} frustumCulled=${false} renderOrder=${2}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args=${[data.positions, 3]} />
+          <bufferAttribute attach="attributes-aSize" args=${[data.sizes, 1]} />
+          <bufferAttribute attach="attributes-aAlpha" args=${[data.alphas, 1]} />
+        </bufferGeometry>
+        <primitive object=${material} attach="material" />
+      </points>
+      <points frustumCulled=${false} renderOrder=${3}>
+        <bufferGeometry ref=${burstGeoRef}>
+          <bufferAttribute attach="attributes-position" args=${[burstBuf.positions, 3]} />
+          <bufferAttribute attach="attributes-aSize" args=${[burstBuf.sizes, 1]} />
+          <bufferAttribute attach="attributes-aAlpha" args=${[burstBuf.alphas, 1]} />
+        </bufferGeometry>
+        <primitive object=${material} attach="material" />
+      </points>
+    </group>
   `;
 }
 
