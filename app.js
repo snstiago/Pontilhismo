@@ -1029,10 +1029,11 @@ function UnifiedPointCloud({ data, controls }) {
     }
     const smoothMouse = smoothMouseRef.current;
 
-    // Streak-fade ghost: keeps the streak fade lingering at the last cursor spot
-    // and easing out slowly after the cursor leaves — in sync with the slow
-    // displacement dissolve — so the uncovered mini-streams fade back in gently
-    // instead of popping the instant the mouse is removed.
+    // Cursor "ghost": the near-cursor streak fade (which hides the fast conveyor
+    // uncovered by the hover) must NOT switch off the instant the cursor leaves
+    // the viewframe — otherwise that conveyor pops into view = the stream. Keep
+    // the last cursor spot and let its influence ease out, so the fade lingers
+    // and dissolves gently while the gap refills.
     let ghost = mouseGhostRef.current;
     if (smoothMouse) {
       if (!ghost) ghost = mouseGhostRef.current = { x: smoothMouse.x, y: smoothMouse.y, influence: 1 };
@@ -1040,7 +1041,7 @@ function UnifiedPointCloud({ data, controls }) {
       ghost.y = smoothMouse.y;
       ghost.influence = 1;
     } else if (ghost) {
-      ghost.influence *= 0.985;
+      ghost.influence *= 0.99;
       if (ghost.influence < 0.01) {
         mouseGhostRef.current = null;
         ghost = null;
@@ -1271,12 +1272,9 @@ function UnifiedPointCloud({ data, controls }) {
           + (particle.inwardCycleNormalY * aliveCross * aliveRadius * 0.24 * lateralMotionScale);
       }
 
-      // Mouse offset. A dot is attracted toward the cursor; when the cursor
-      // leaves, the displacement is FROZEN — the dot never reverses back, it just
-      // keeps flowing forward to the orb (the whole piece is one constant flow to
-      // the orb, there are no fixed homes to return to). The frozen offset is
-      // cleared only once the dot is hidden (merged into the orb or recycled
-      // off-screen), so the reset is never seen. mouseOffsetDelta* keeps the
+      // Mouse offset. A dot is attracted to the cursor; when let go it eases back
+      // to its place (rejoining the normal flow, which carries it to the orb and
+      // recycles from outside like every other dot). mouseOffsetDelta* keeps the
       // streak fade blind to this motion.
       let mouseOffsetDeltaX = 0;
       let mouseOffsetDeltaY = 0;
@@ -1288,14 +1286,16 @@ function UnifiedPointCloud({ data, controls }) {
         const startOffY = offY;
         let velX = mouseVelRef.current[oi];
         let velY = mouseVelRef.current[oi + 1];
+        const mouseRadius = data.primaryOrb ? data.primaryOrb.radius * 3.0 : 0;
+        const jSeed1 = Math.sin(particle.baseX * 127.1 + particle.baseY * 311.7) * 43758.5453;
+        const jSeed2 = Math.sin(particle.baseX * 269.5 + particle.baseY * 183.3) * 43758.5453;
+        const r1 = jSeed1 - Math.floor(jSeed1);
+        const r2 = jSeed2 - Math.floor(jSeed2);
 
         if (smoothMouse && (particle.inwardCycleOrbMask ?? 0) < 0.3 && !particle.isMouseShadow && data.primaryOrb) {
-          const mouseRadius = data.primaryOrb.radius * 3.0;
-          // Per-particle stable random jitter using base position as hash seed
-          const jSeed1 = Math.sin(particle.baseX * 127.1 + particle.baseY * 311.7) * 43758.5453;
-          const jSeed2 = Math.sin(particle.baseX * 269.5 + particle.baseY * 183.3) * 43758.5453;
-          const jAngle = (jSeed1 - Math.floor(jSeed1)) * Math.PI * 2;
-          const jR = (jSeed2 - Math.floor(jSeed2)) * mouseRadius * 0.10;
+          // Stable jittered points around the cursor (the spread of the cloud).
+          const jR = r2 * mouseRadius * 0.10;
+          const jAngle = r1 * Math.PI * 2;
           const tx = smoothMouse.x + Math.cos(jAngle) * jR;
           const ty = smoothMouse.y + Math.sin(jAngle) * jR;
           const ax = x + offX;
@@ -1304,7 +1304,8 @@ function UnifiedPointCloud({ data, controls }) {
           const dy = ty - ay;
           const dist = Math.hypot(dx, dy);
           if (dist < mouseRadius) {
-            // Within reach: attract toward the cursor.
+            // Within reach: attract toward the cursor (force-based, eased — the
+            // original organic feel).
             if (dist > 0.1) {
               const t = 1 - dist / mouseRadius;
               const force = t * t * 0.00030 * mouseRadius;
@@ -1315,7 +1316,6 @@ function UnifiedPointCloud({ data, controls }) {
             velY *= 0.91;
             offX += velX;
             offY += velY;
-            // Small cap to prevent runaway accumulation
             const maxOff = mouseRadius * 0.20;
             const offDist = Math.hypot(offX, offY);
             if (offDist > maxOff) {
@@ -1326,32 +1326,22 @@ function UnifiedPointCloud({ data, controls }) {
               velY *= 0.3;
             }
           } else {
-            // Out of reach: let go. Stop attracting and freeze the displacement so
-            // the dot only ever keeps flowing forward to the orb, never backward.
-            // Clear the frozen offset only where it can't be seen (deep in the orb
-            // or off-screen).
+            // Out of reach: let go but DON'T snap back — keep the displacement so
+            // the dot just carries on drifting forward with the flow, toward the
+            // orb (where the drifted-fade dissolves it), then recycles. Clear the
+            // leftover offset only off-screen, where it can't be seen.
             velX = 0;
             velY = 0;
-            const orbEdge = Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) / data.primaryOrb.radius;
-            const offscreen = Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40;
-            if (orbEdge < 0.6 || offscreen) {
+            if (Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40) {
               offX *= 0.8;
               offY *= 0.8;
             }
           }
         } else {
-          // No cursor (or not eligible): same forward-only release — freeze and
-          // clear only where hidden.
+          // No cursor: same — carry on forward, clear only off-screen.
           velX = 0;
           velY = 0;
-          if (data.primaryOrb) {
-            const orbEdge = Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) / data.primaryOrb.radius;
-            const offscreen = Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40;
-            if (orbEdge < 0.6 || offscreen) {
-              offX *= 0.8;
-              offY *= 0.8;
-            }
-          } else {
+          if (Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40) {
             offX *= 0.8;
             offY *= 0.8;
           }
@@ -1410,7 +1400,13 @@ function UnifiedPointCloud({ data, controls }) {
           && y < halfHeight + viewportMargin;
         const previousInsideOrb = Math.hypot(previousX - orb.x, previousY - orb.y) < orb.radius * 0.9;
         const currentInsideOrb = Math.hypot(x - orb.x, y - orb.y) < orb.radius * 0.9;
-        const jumpDistance = hadPreviousFrame ? Math.hypot(x - previousX, y - previousY) : 0;
+        // Measure the jump from the dot's OWN motion only (exclude the mouse
+        // offset). Otherwise a cursor-pulled dot trips this recycle-smoother and
+        // gets flung toward the orb — that was the fast "noise stream" leaving the
+        // hovered zone. A pulled dot isn't recycling, so it must not be caught here.
+        const jumpDistance = hadPreviousFrame
+          ? Math.hypot((x - previousX) - mouseOffsetDeltaX, (y - previousY) - mouseOffsetDeltaY)
+          : 0;
         const visibleJumpLimit = 86;
 
         if (
@@ -1498,17 +1494,28 @@ function UnifiedPointCloud({ data, controls }) {
         continuity.renderedVisible[index] = nextAlpha > 0.001 && nextSize > 0.05 ? 1 : 0;
       }
 
-      // The fast "stream" only shows up on hover: pulling the slow landscape
-      // dots toward the cursor uncovers the fast conveyor dots that are normally
-      // camouflaged. So fade the exposed streaks — but ONLY near the cursor,
-      // where dots are actually pulled aside. Away from the cursor nothing is
-      // uncovered, so the field stays fully intact (otherwise every fast dot in
-      // the whole frame blinks out whenever the mouse is anywhere on screen).
-      // At rest (no cursor) this is fully inert, so normal dots are untouched.
+      // Hovering pulls the slow surface dots toward the cursor, uncovering the
+      // fast inward-flow conveyor behind them — which reads as a noise stream
+      // toward the orb. Fade those fast dots, but only near the cursor (where the
+      // uncovering happens); the rest of the field and the calm flow are untouched.
       if (ghost && data.primaryOrb) {
         const fadeReach = data.primaryOrb.radius * 3.0;
         const nearCursor = 1 - smoothstep(fadeReach * 0.5, fadeReach, Math.hypot(x - ghost.x, y - ghost.y));
         nextAlpha *= 1 - (smoothstep(1.6, 3.4, frameSpeed) * nearCursor * ghost.influence);
+      }
+
+      // Held dots keep drifting with the flow (the living motion of the gathered
+      // cloud). Left alone they drift all the way INTO the orb = the stream. So
+      // fade a held/displaced dot once it has drifted close to the ORB (its tail
+      // dissolves before arriving). Keyed on distance to the orb — NOT the cursor —
+      // so it never makes a halo around the mouse, and runs ALWAYS, not just while
+      // the cursor is on the canvas: a dot displaced by an earlier hover is still
+      // the stream tail after the cursor has left the viewframe.
+      if (data.primaryOrb && mouseOffsetRef.current) {
+        const offM = Math.hypot(mouseOffsetRef.current[index * 2], mouseOffsetRef.current[(index * 2) + 1]);
+        if (offM > data.primaryOrb.radius * 0.16) {
+          nextAlpha *= 1 - smoothstep(data.primaryOrb.radius * 2.2, data.primaryOrb.radius * 1.2, renderedOrbDistance);
+        }
       }
 
       sizes[index] = nextSize;
