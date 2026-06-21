@@ -1498,22 +1498,35 @@ function UnifiedPointCloud({ data, controls }) {
       // fast inward-flow conveyor behind them — which reads as a noise stream
       // toward the orb. Fade those fast dots, but only near the cursor (where the
       // uncovering happens); the rest of the field and the calm flow are untouched.
-      if (ghost && data.primaryOrb) {
+      // Only AFTER the cursor has left (ghost present but smoothMouse gone) do we
+      // fade the fast conveyor near the last cursor spot, so it doesn't pop into
+      // view on leave. During active hover we do NOT fade here — that was carving
+      // a void around the cursor and making the dots being gathered disappear.
+      if (ghost && !smoothMouse && data.primaryOrb) {
         const fadeReach = data.primaryOrb.radius * 3.0;
         const nearCursor = 1 - smoothstep(fadeReach * 0.5, fadeReach, Math.hypot(x - ghost.x, y - ghost.y));
         nextAlpha *= 1 - (smoothstep(1.6, 3.4, frameSpeed) * nearCursor * ghost.influence);
       }
 
-      // Held dots keep drifting with the flow (the living motion of the gathered
-      // cloud). Left alone they drift all the way INTO the orb = the stream. So
-      // fade a held/displaced dot once it has drifted close to the ORB (its tail
-      // dissolves before arriving). Keyed on distance to the orb — NOT the cursor —
-      // so it never makes a halo around the mouse, and runs ALWAYS, not just while
-      // the cursor is on the canvas: a dot displaced by an earlier hover is still
-      // the stream tail after the cursor has left the viewframe.
+      // The leave-stream (proven with the debug): the dots you gathered are, once
+      // let go, picked up by the conveyor and carried FAST to the orb — they have
+      // a mouse offset AND high frameSpeed. So fade a displaced dot by its speed:
+      // the fast streaking tail dissolves, while the slow gathered cloud (the
+      // life) stays. Plus fade the slow stragglers as they reach the orb. Runs
+      // ALWAYS — a dot displaced by an earlier hover keeps streaming after the
+      // cursor has left the viewframe.
       if (data.primaryOrb && mouseOffsetRef.current) {
         const offM = Math.hypot(mouseOffsetRef.current[index * 2], mouseOffsetRef.current[(index * 2) + 1]);
-        if (offM > data.primaryOrb.radius * 0.16) {
+        if (offM > data.primaryOrb.radius * 0.12) {
+          // Fade the speed only of dots that have SETTLED (offset stable) and are
+          // now being carried fast to the orb — the cap-drift / released stream.
+          // A dot the cursor is actively pulling IN has a fast-growing offset
+          // (large mouseOffsetDelta); keep those visible even though they're
+          // displaced and fast, otherwise the gathering cloud vanishes on hover.
+          const offDelta = Math.hypot(mouseOffsetDeltaX, mouseOffsetDeltaY);
+          if (offDelta < 0.55) {
+            nextAlpha *= 1 - smoothstep(2.0, 3.5, frameSpeed);
+          }
           nextAlpha *= 1 - smoothstep(data.primaryOrb.radius * 2.2, data.primaryOrb.radius * 1.2, renderedOrbDistance);
         }
       }
