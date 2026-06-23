@@ -973,7 +973,6 @@ function UnifiedPointCloud({ data, controls }) {
     previousAlpha: new Float32Array(data.particles.length),
     renderedVisible: new Uint8Array(data.particles.length),
     initialized: new Uint8Array(data.particles.length),
-    absorbed: new Uint8Array(data.particles.length),
   };
   impactsRef.current = [];
   lastImpactCycleRef.current = new Int32Array(data.particles.length).fill(-1);
@@ -1480,6 +1479,24 @@ function UnifiedPointCloud({ data, controls }) {
           y = previousY + ((toOrbY / toOrbLength) * continuityStep);
         }
 
+        // Ease dots DOWN in speed as they reach the orb's surface, so they slow and
+        // dissolve in (the merge) instead of streaking in. NARROW band (e<1.5) and
+        // gentle, and the absorption (e<0.85) clears them shortly after — so they
+        // don't pile up (the earlier wide+aggressive clamp piled into a clump).
+        if (hadPreviousFrame && orb) {
+          const arriveEdge = Math.hypot(x - orb.x, y - orb.y) / orb.radius;
+          if (arriveEdge < 1.5 && arriveEdge > 0.85) {
+            const ownDx = (x - previousX) - mouseOffsetDeltaX;
+            const ownDy = (y - previousY) - mouseOffsetDeltaY;
+            const ownStep = Math.hypot(ownDx, ownDy);
+            const maxStep = 1.8 + (smoothstep(1.05, 1.5, arriveEdge) * 2.4);
+            if (ownStep > maxStep) {
+              const f = maxStep / ownStep;
+              x = previousX + (ownDx * f) + mouseOffsetDeltaX;
+              y = previousY + (ownDy * f) + mouseOffsetDeltaY;
+            }
+          }
+        }
 
         if (hadPreviousFrame) frameSpeed = Math.hypot((x - previousX) - mouseOffsetDeltaX, (y - previousY) - mouseOffsetDeltaY);
         continuity.previousX[index] = x;
@@ -1523,6 +1540,11 @@ function UnifiedPointCloud({ data, controls }) {
       // Single MAX size for the whole layout — no dot (anywhere, incl. the orb halo)
       // renders bigger than the big dots down below. Applied as a cap on nextSize.
       const maxSize = controls.globalDotSize * 4.4;
+      // Grow to the max size ONLY right at the orb's surface (a narrow ring,
+      // e ~1.5 → 1.05), so a dot looks big as it merges in — while the wider
+      // approach/convergence flow stays its normal size, so there's no long "stream
+      // of big dots" (the old wide growth, e 2.2→1.0, made the whole convergence big).
+      const orbSurfaceGrow = orb ? smoothstep(1.5, 1.05, renderedOrbEdge) : 0;
       const finalSize = size * travelSizeScale;
       // Global MINIMUM dot size: no dot renders smaller than this away from the orb,
       // so the small low-tone zones (the "red zone" dust) come up to ~normal size —
@@ -1532,15 +1554,10 @@ function UnifiedPointCloud({ data, controls }) {
       const journeySizeFloor = lerp(controls.globalDotSize * 1.7, 0, enteringSolidOrb);
 
       let nextSize = Math.min(Math.max(finalSize, journeySizeFloor) * mergeVisibility * wrapSizeMul, maxSize);
+      // Grow to the max size at the orb's surface — applied AFTER the recycle-shrink
+      // (wrapSizeMul) which would otherwise keep arriving dots small there.
+      nextSize = lerp(nextSize, maxSize, orbSurfaceGrow);
   let nextAlpha = alpha * mergeVisibility * orbOwnHide;
-      // Absorption latch: once a dot reaches the orb it is GONE — it stays hidden
-      // until it has recycled back out to the field, so nothing ever comes back OUT
-      // of the orb. Set when it crosses in (e<0.85), cleared once it's well clear.
-      if (continuity && orb) {
-        if (renderedOrbEdge < 0.85) continuity.absorbed[index] = 1;
-        else if (renderedOrbEdge > 1.8) continuity.absorbed[index] = 0;
-        if (continuity.absorbed[index] === 1) nextAlpha = 0;
-      }
 
   if (continuity && orb) {
     const renderInViewport = x > -halfWidth - viewportMargin
