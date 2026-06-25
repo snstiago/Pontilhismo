@@ -13,6 +13,11 @@ const REFERENCE_HEIGHT = 744;
 const MAX_SAMPLE_SIDE = 1400;
 const MIN_PARTICLE_STEP = 1.9;
 const MAX_PARTICLE_STEP = 3.6;
+const ORB_OCCLUSION_INSET = 10;
+const ORB_HIDDEN_BUFFER = 16;
+const FLOW_MIN_VISIBLE_SIZE = 0.92;
+const FLOW_SIZE_SHRINK_PER_FRAME = 0.965;
+const FLOW_SIZE_GROW_PER_FRAME = 1.06;
 const MOTION_CONTROLS = {
   globalMotion: 0,
   globalSpeed: 0.2,
@@ -41,7 +46,7 @@ const MOTION_CONTROLS = {
   orbSolidFill: 1,
   dotProtection: 1.8,
   hoverSpacing: 1.2,
-  denseExitShrink: 0,
+  denseExitShrink: 1,
   hoverReach: 1.1,
   motionCohesion: 1.12,
   foregroundCircleAmount: 1.84,
@@ -211,7 +216,7 @@ function getStructuredThreshold(cellX, cellY, x, y) {
   const ordered = (BAYER_8[((cellY & 7) * 8) + (cellX & 7)] + 0.5) / 64;
   const wobble = hash01(x, y, 73);
 
-  return clamp((ordered * 0.93) + (wobble * 0.07), 0, 1);
+  return clamp((ordered * 0.68) + (wobble * 0.32), 0, 1);
 }
 
 function getSuppressedOrbMask(x, y, width, height) {
@@ -402,10 +407,9 @@ function finalizeParticleStore(store) {
   };
 }
 
-// Bilinear sample of the coarse density field (built at generation from the
-// reference's per-cell concentration, EXCLUDING the orb). Tells how dense the dot
-// cloud is at an arbitrary CURRENT position (sx, sy in sample coords) — so a dot's
-// size can follow the ZONE it's currently in, not the home it came from.
+// Bilinear sample of a coarse density field. Used for zone-aware sizing: a moving
+// dot can shrink once it leaves a bold layout zone, without changing the particle
+// population or exposing the source sampling grid.
 function sampleDensityField(field, sx, sy) {
   if (!field) return 0;
   const fx = (sx / field.cellSize) - 0.5;
@@ -535,25 +539,31 @@ function addLivingMotionProperties(store, focus, width, height) {
     const topSolidMask = orbMask * smoothstep(-0.08, 0.48, vertical);
     const lowerOrbTexture = orbMask * (1 - topSolidMask);
     const sparseField = clamp(1 - particle.concentration, 0, 1);
-    const aboveOrbCutoff = 1 - smoothstep(0, focus.radius * 0.5, dy);
+    const belowOrbFlow = 1 - smoothstep(0, focus.radius * 0.5, dy);
+    const upperOrbFlow = smoothstep(focus.radius * 2.4, focus.radius * 0.82, focusDistance)
+      * smoothstep(focus.radius * 2.0, focus.radius * 0.16, Math.max(0, dy));
+    const cycleFlowMask = Math.max(belowOrbFlow, upperOrbFlow * 0.42);
     const haloAngle = Math.min(0, Math.max(-Math.PI, Math.atan2(dy, dx)));
     const haloNearX = focus.x + (Math.cos(haloAngle) * focus.radius);
     const haloNearY = focus.y + (Math.sin(haloAngle) * focus.radius);
     const distToLowerOrb = Math.hypot(particle.baseX - haloNearX, particle.baseY - haloNearY);
     const haloRegion = smoothstep(focus.radius * 2.5, focus.radius * 0.15, distToLowerOrb);
-    const cycleFieldMask = fieldMask * aboveOrbCutoff * lerp(0.12, 1, haloRegion);
-    const wanderMask = (1 - aboveOrbCutoff) * fieldMask;
+    const cycleFieldMask = fieldMask * cycleFlowMask * lerp(0.12, 1, haloRegion);
+    const wanderMask = (1 - cycleFlowMask) * fieldMask;
     const toFocusX = -dx / focusDistance;
     const toFocusY = -dy / focusDistance;
-    const outwardX = dx / focusDistance;
-    const outwardY = dy / focusDistance;
     const pathNoise = hash01(particle.baseX, particle.baseY, 8101);
+    const aimX = -dx;
+    const aimY = focus.radius - dy;
+    const aimDist = Math.sqrt((aimX * aimX) + (aimY * aimY));
+    const inwardX = aimX / aimDist;
+    const inwardY = aimY / aimDist;
     const distanceToOrbEdge = Math.max(0, focusDistance - (focus.radius * 0.9));
     const offscreenDistance = getOffscreenDistanceFromPoint(
       particle.baseX,
       particle.baseY,
-      outwardX,
-      outwardY,
+      -inwardX,
+      -inwardY,
       width,
       height,
       offscreenMargin * (0.84 + (pathNoise * 0.32))
@@ -623,7 +633,7 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.waveFlowY = waveY / waveLength;
     particle.waveFlowSpan = (2.2 + (sparseField * 1.2) + (particle.concentration * 1.1)) * upperWaveMask;
     particle.waveFlowSpeed = 0.055 + (hash01(particle.baseX, particle.baseY, 8179) * 0.045);
-    particle.inwardCyclePhase = hash01(particle.baseX, particle.baseY, 8191);
+    particle.inwardCyclePhase = (hash01(particle.baseX, particle.baseY, 8191) + (particle.cyclePhaseOffset ?? 0)) % 1;
     particle.inwardCycleSpeed = 0.062 + (fieldMask * 0.07) + (hash01(particle.baseX, particle.baseY, 8209) * 0.034);
     particle.coherentInwardCyclePhase = particle.inwardCyclePhase;
     particle.coherentInwardCycleSpeed = 0.072 + (fieldMask * 0.058) + (sparseField * 0.012);
@@ -631,7 +641,9 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.inwardCycleOrbMask = orbMask;
     particle.inwardCycleNearOrb = smoothstep(focus.radius * 1.28, focus.radius * 0.84, focusDistance);
     particle.inwardCycleEdgeMask = smoothstep(focus.radius * 1.52, focus.radius * 0.98, focusDistance);
-    particle.inwardCycleOffscreen = (fieldMask * offscreenDistance) + (lowerOrbTexture * 3.2) + (topSolidMask * 1.2);
+    particle.inwardCycleOffscreen = (
+      (orbMask < 0.22 ? 1 : fieldMask) * offscreenDistance
+    ) + (lowerOrbTexture * 3.2) + (topSolidMask * 1.2);
     particle.inwardCycleToOrb = (fieldMask * fullArrivalDistance) + (lowerOrbTexture * 5.8) + (topSolidMask * 1.8);
     particle.inwardCycleOuter = (
       localConveyorSpan * (0.88 + (hash01(particle.baseX, particle.baseY, 8213) * 0.22))
@@ -644,17 +656,11 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.inwardCycleSource = localConveyorSpan * (0.18 + (hash01(particle.baseX, particle.baseY, 8217) * 0.18));
     particle.inwardCycleArrivalSpan = arrivalSpan;
     particle.inwardCycleMerge = 1.8 + (fieldMask * 4.8) + (lowerOrbTexture * 1.6);
-    const aimX = -dx;
-    const aimY = focus.radius - dy;
-    const aimDist = Math.sqrt((aimX * aimX) + (aimY * aimY));
     const arcSide = (dx > 0) ? -1 : (dx < 0 ? 1 : 0);
-    particle.inwardCycleX = aimX / aimDist;
-    particle.inwardCycleY = aimY / aimDist;
-    particle.inwardCycleNormalX = -aimY / aimDist;
-    particle.inwardCycleNormalY = aimX / aimDist;
-    const distToOrbSurface = Math.max(0, aimDist - focus.radius);
-    particle.inwardCycleImpactX = particle.baseX + (particle.inwardCycleX * distToOrbSurface);
-    particle.inwardCycleImpactY = particle.baseY + (particle.inwardCycleY * distToOrbSurface);
+    particle.inwardCycleX = inwardX;
+    particle.inwardCycleY = inwardY;
+    particle.inwardCycleNormalX = -inwardY;
+    particle.inwardCycleNormalY = inwardX;
     particle.inwardCycleArc = arcSide * (0.4 + (hash01(particle.baseX, particle.baseY, 8221) * 0.6)) * (0.45 + (fieldMask * 1.35));
     particle.inwardCycleAbsArc = arcSide * cycleFieldMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 0.15;
     particle.inwardCycleArrival = orbMask;
@@ -680,6 +686,7 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
   const fieldCols = Math.ceil(width / fieldCell);
   const fieldRows = Math.ceil(height / fieldCell);
   const fieldData = new Float32Array(fieldCols * fieldRows);
+  const sizeFieldData = new Float32Array(fieldCols * fieldRows);
 
   for (let y = step * 0.5, cellY = 0; y < height; y += step, cellY += 1) {
     for (let x = step * 0.5, cellX = 0; x < width; x += step, cellX += 1) {
@@ -703,6 +710,7 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
         continuityFloor.concentration + (lowerDensityBias * 0.055),
         (softBrightness * 0.74) + (localBrightness * 0.2)
       ), 0, 1), 1.2);
+      const layoutConcentration = concentration;
 
       if (primaryOrbMask > 0.001) {
         const orbGrain = hash01(sampleX, sampleY, 4387) - 0.5;
@@ -722,12 +730,13 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
       }
 
       {
-        // Include the orb + its halo in the field too — that whole region is dense,
-        // so dots there read as a big zone (smooth), instead of the halo being
-        // treated as sparse and shrinking into a dark ring around the orb.
+        // Keep the density field aligned with the rendered cloud. Excluding large
+        // regions here exposes the regular source sampling grid.
         const fgi = Math.min(fieldRows - 1, Math.floor(sampleY / fieldCell)) * fieldCols
           + Math.min(fieldCols - 1, Math.floor(sampleX / fieldCell));
         if (concentration > fieldData[fgi]) fieldData[fgi] = concentration;
+        const sizeConcentration = layoutConcentration * (1 - primaryOrbMask);
+        if (sizeConcentration > sizeFieldData[fgi]) sizeFieldData[fgi] = sizeConcentration;
       }
 
       const foregroundMask = smoothstep(0.32, 0.92, concentration);
@@ -739,8 +748,13 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
         continue;
       }
 
-      const worldX = sampleX - width / 2;
-      const worldY = height / 2 - sampleY;
+      const positionJitterAmount = step
+        * lerp(0.78, 1.18, foregroundMask)
+        * lerp(1, 0.52, primaryOrbMask);
+      const positionJitterX = (hash01(sampleX, sampleY, 331) - 0.5) * positionJitterAmount;
+      const positionJitterY = (hash01(sampleX, sampleY, 337) - 0.5) * positionJitterAmount;
+      const worldX = clamp(sampleX + positionJitterX, 0, width - 1) - width / 2;
+      const worldY = height / 2 - clamp(sampleY + positionJitterY, 0, height - 1);
       const continuityChance = (smoothstep(0.22, 0.7, brightness) * 0.28) + (continuityFloor.concentration * 0.14);
       const primaryOrbChance = primaryOrbMask * lerp(0.988, 0.9995, sunContinuity);
       const drawChance = clamp(Math.max(
@@ -860,7 +874,9 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
   finalized.width = width;
   finalized.height = height;
   const blurredField = blurDensityField(fieldData, fieldCols, fieldRows, 3);
+  const blurredSizeField = blurDensityField(sizeFieldData, fieldCols, fieldRows, 3);
   finalized.densityField = { data: blurredField, cols: fieldCols, rows: fieldRows, cellSize: fieldCell };
+  finalized.sizeDensityField = { data: blurredSizeField, cols: fieldCols, rows: fieldRows, cellSize: fieldCell };
   return finalized;
 }
 
@@ -930,8 +946,6 @@ function CameraBounds({ width, height }) {
 function UnifiedPointCloud({ data, controls }) {
   const pointsRef = useRef(null);
   const continuityRef = useRef(null);
-  const impactsRef = useRef([]);
-  const lastImpactCycleRef = useRef(null);
   const mousePosRef = useRef(null);
   const mouseOffsetRef = useRef(null);
   const mouseVelRef = useRef(null);
@@ -968,16 +982,15 @@ function UnifiedPointCloud({ data, controls }) {
   useEffect(() => {
     continuityRef.current = {
       previousX: new Float32Array(data.particles.length),
-    previousY: new Float32Array(data.particles.length),
-    previousSize: new Float32Array(data.particles.length),
-    previousAlpha: new Float32Array(data.particles.length),
-    renderedVisible: new Uint8Array(data.particles.length),
-    initialized: new Uint8Array(data.particles.length),
-  };
-  impactsRef.current = [];
-  lastImpactCycleRef.current = new Int32Array(data.particles.length).fill(-1);
-  mouseOffsetRef.current = new Float32Array(data.particles.length * 2);
-  mouseVelRef.current = new Float32Array(data.particles.length * 2);
+      previousY: new Float32Array(data.particles.length),
+      previousSize: new Float32Array(data.particles.length),
+      previousAlpha: new Float32Array(data.particles.length),
+      renderedVisible: new Uint8Array(data.particles.length),
+      initialized: new Uint8Array(data.particles.length),
+      carryToOrb: new Uint8Array(data.particles.length),
+    };
+    mouseOffsetRef.current = new Float32Array(data.particles.length * 2);
+    mouseVelRef.current = new Float32Array(data.particles.length * 2);
   }, [data]);
 
   useEffect(() => {
@@ -1166,12 +1179,14 @@ function UnifiedPointCloud({ data, controls }) {
       let size = particle.size * sizeScale * orbSizeBoost;
       let alpha = particle.alpha;
       const densityBoost = smoothstep(0.04, 0.24, visualConcentration) * (1 - (particle.inwardCycleOrbMask ?? 0));
-      alpha *= lerp(1, 1.7, densityBoost);
       size *= lerp(1, 1.5, densityBoost);
       let travelSizeScale = 1;
       let wrapSizeMul = 1;
       let flowMask = 0;
+      let flowTravelT = 0;
+      let flowLeftHome = 0;
       let hadPreviousFrame = false;
+      let suppressVisibilityCarry = false;
 
       if ((particle.inwardCycleSpan ?? 0) > 0.001) {
         const inwardPhase = lerpCycle(
@@ -1194,6 +1209,7 @@ function UnifiedPointCloud({ data, controls }) {
         const orbLoopMask = particle.inwardCycleOrbMask ?? 0;
         const edgeMask = particle.inwardCycleEdgeMask ?? 0;
         const travelT = 1 - Math.pow(1 - loop, 1.28);
+        flowTravelT = travelT;
         const offscreen = Math.max(
           outer + (source * 0.35),
           particle.inwardCycleOffscreen ?? (outer + source)
@@ -1201,21 +1217,21 @@ function UnifiedPointCloud({ data, controls }) {
         const fullArrival = (particle.inwardCycleToOrb ?? arrival)
           * motionAmount
           * (0.92 + (flowDistanceControl * 0.18));
-        // Near-orb halo dots are STATIC (part of the "already there" halo) — they
-        // don't recycle, so they never get pushed off-screen and fly back in fast.
-        // Only the field dots (low orbLoopMask) flow into the orb. Threshold raised
-        // (was 0.34..0.82) so more of the halo is static and can't streak in.
+        // Keep the original continuous conveyor: field dots flow fully, near-orb
+        // dots ease out of the travel instead of being hard-stopped.
         const orbStaticMask = smoothstep(0.22, 0.5, orbLoopMask);
         const activeFlowMask = 1 - orbStaticMask;
         const pathStart = lerp(-offscreen, 0, orbStaticMask);
-        const fieldPathEnd = fullArrival + (merge * 0.62);
+        const fieldPathEnd = fullArrival + (merge * 0.62) + ORB_HIDDEN_BUFFER;
         const pathEnd = lerp(fieldPathEnd, 0, orbStaticMask);
-        const baseCrossT = clamp((-pathStart) / Math.max(0.0001, pathEnd - pathStart), 0, 1);
         let pathPosition = lerp(pathStart, pathEnd, travelT);
-        let arcT = Math.sin(travelT * Math.PI);
+        const pathProgress = travelT;
+        let arcT = Math.sin(pathProgress * Math.PI);
+        flowTravelT = pathProgress;
+        const leftHomeT = smoothstep(0, 72, pathPosition);
 
         if (edgeMask > 0.001) {
-          const entryT = smoothstep(0.54, 1, travelT);
+          const entryT = smoothstep(0.54, 1, pathProgress);
           pathPosition += edgeMask * entryT * merge * 0.36;
           arcT *= lerp(1, 0.32, edgeMask);
         }
@@ -1224,18 +1240,16 @@ function UnifiedPointCloud({ data, controls }) {
         arcT *= activeFlowMask;
 
         // Size is keyed on POSITION, not journey phase (see the gather block below):
-        // a dot is big while it's in its dense home ZONE and again at the orb, normal
-        // in the open space between. We just need to know here whether this dot
-        // actually flows (orb-interior dots don't, so they never shrink).
+        // a dot is big while it's in its dense home zone, normal in the open space
+        // between. We just need to know whether this dot actually flows.
         flowMask = activeFlowMask;
+        flowLeftHome = leftHomeT * activeFlowMask;
 
-        // End of the cycle: instead of blinking out, a big dot eases down to a
-        // normal dot's size; only the very last sliver fades, to hide the recycle.
-        const wrapT = smoothstep(0.8, 1, travelT) * activeFlowMask;
+        // Let dense dots shrink by size as they travel. Do not fade the arrival:
+        // points should disappear only when the solid orb covers them.
+        const wrapT = smoothstep(0.8, 1, pathProgress) * activeFlowMask;
         wrapSizeMul = lerp(1, 1 / lerp(1, 1.5, densityBoost), wrapT);
-        const entryFade = lerp(1, smoothstep(0, 0.05, travelT), activeFlowMask);
-        const tailFade = lerp(1, 1 - smoothstep(0.93, 1, travelT), activeFlowMask);
-        alpha *= entryFade * tailFade;
+        suppressVisibilityCarry = activeFlowMask > 0.001 && pathProgress < 0.08;
 
         const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
         const absArc = (particle.inwardCycleAbsArc ?? 0) * arcT;
@@ -1243,18 +1257,6 @@ function UnifiedPointCloud({ data, controls }) {
         x += (particle.inwardCycleX * pathPosition) + (particle.inwardCycleNormalX * (arc + absArc));
         y += (particle.inwardCycleY * pathPosition) + (particle.inwardCycleNormalY * (arc + absArc));
 
-        if (activeFlowMask > 0.8 && travelT > 0.88 && lastImpactCycleRef.current) {
-          const cycleNum = Math.floor(rawCycle);
-          if (lastImpactCycleRef.current[index] < cycleNum) {
-            const impacts = impactsRef.current;
-            const lastTime = impacts.length > 0 ? impacts[impacts.length - 1].time : -999;
-            if (elapsed - lastTime > 0.22) {
-              lastImpactCycleRef.current[index] = cycleNum;
-              impacts.push({ x: particle.inwardCycleImpactX ?? x, y: particle.inwardCycleImpactY ?? y, time: elapsed });
-              if (impacts.length > 6) impacts.shift();
-            }
-          }
-        }
       }
 
       if ((particle.livingRadiusX ?? 0) > 0.001) {
@@ -1410,30 +1412,8 @@ function UnifiedPointCloud({ data, controls }) {
         y += offY;
       }
 
-      // The "shadow" fill dots used to fade in as the cursor pulled their original
-      // away, to patch the gap left behind — but that means hover CREATES new dots,
-      // which we don't want. Hover should only attract the dots already there. So
-      // the shadows stay invisible; the field simply thins a little where dots are
-      // pulled from.
       if (particle.isMouseShadow) {
         alpha = 0;
-      }
-
-      if ((particle.inwardCycleOrbMask ?? 0) > 0.5 && impactsRef.current.length > 0 && data.primaryOrb) {
-        for (const impact of impactsRef.current) {
-          const age = elapsed - impact.time;
-          if (age < 0 || age > 0.65) continue;
-          const toPartX = x - impact.x;
-          const toPartY = y - impact.y;
-          const dist = Math.hypot(toPartX, toPartY);
-          const maxRadius = data.primaryOrb.radius * 0.52;
-          if (dist < 0.1 || dist > maxRadius) continue;
-          const spatialFade = (1 - (dist / maxRadius)) * (1 - (dist / maxRadius));
-          const timeFade = Math.sin((age / 0.65) * Math.PI);
-          const push = spatialFade * timeFade * data.primaryOrb.radius * 0.18;
-          x += (toPartX / dist) * push;
-          y += (toPartY / dist) * push;
-        }
       }
 
       const orb = data.primaryOrb;
@@ -1451,6 +1431,14 @@ function UnifiedPointCloud({ data, controls }) {
           && x < halfWidth + viewportMargin
           && y > -halfHeight - viewportMargin
           && y < halfHeight + viewportMargin;
+        const previousInStage = previousX > -halfWidth
+          && previousX < halfWidth
+          && previousY > -halfHeight
+          && previousY < halfHeight;
+        const currentInStage = x > -halfWidth
+          && x < halfWidth
+          && y > -halfHeight
+          && y < halfHeight;
         const previousInsideOrb = Math.hypot(previousX - orb.x, previousY - orb.y) < orb.radius * 0.9;
         const currentInsideOrb = Math.hypot(x - orb.x, y - orb.y) < orb.radius * 0.9;
         // Measure the jump from the dot's OWN motion only (exclude the mouse
@@ -1461,7 +1449,6 @@ function UnifiedPointCloud({ data, controls }) {
           ? Math.hypot((x - previousX) - mouseOffsetDeltaX, (y - previousY) - mouseOffsetDeltaY)
           : 0;
         const visibleJumpLimit = 86;
-
         if (
           hadPreviousFrame
           && previousInViewport
@@ -1469,11 +1456,12 @@ function UnifiedPointCloud({ data, controls }) {
           && !previousInsideOrb
           && !currentInsideOrb
           && jumpDistance > visibleJumpLimit
+          && particle.baseY > orb.y - (orb.radius * 0.18)
         ) {
           const toOrbX = orb.x - previousX;
           const toOrbY = orb.y - previousY;
           const toOrbLength = Math.max(1, Math.hypot(toOrbX, toOrbY));
-          const continuityStep = Math.min(jumpDistance, 7 + (speedScale * 3) + (flowSpeedControl * 4));
+          const continuityStep = Math.min(jumpDistance, 1.2 + (speedScale * 0.25) + (flowSpeedControl * 0.35));
 
           x = previousX + ((toOrbX / toOrbLength) * continuityStep);
           y = previousY + ((toOrbY / toOrbLength) * continuityStep);
@@ -1498,7 +1486,69 @@ function UnifiedPointCloud({ data, controls }) {
           }
         }
 
+        const hiddenOrbRadius = Math.max(0, orb.radius - ORB_OCCLUSION_INSET - ORB_HIDDEN_BUFFER);
+        if (hadPreviousFrame && flowMask > 0.001) {
+          const previousOrbDistance = Math.hypot(previousX - orb.x, previousY - orb.y);
+          // If the cycle wraps while a dot is still visible, continue it toward the
+          // orb instead of letting the raw offscreen reset make it disappear.
+          const recycleWhileVisible = flowTravelT < 0.08
+            && previousInViewport
+            && previousOrbDistance > hiddenOrbRadius
+            && previousOrbDistance < orb.radius * 6.2;
+          const carryingToOrb = continuity.carryToOrb[index] === 1 || recycleWhileVisible;
+
+          if (carryingToOrb) {
+            continuity.carryToOrb[index] = 1;
+            const toOrbX = orb.x - previousX;
+            const toOrbY = orb.y - previousY;
+            const toOrbLength = Math.max(0.0001, Math.hypot(toOrbX, toOrbY));
+            const remaining = Math.max(0, previousOrbDistance - hiddenOrbRadius);
+            const continuationStep = Math.min(
+              remaining,
+              0.95 + (flowSpeedControl * 0.25) + (smoothstep(orb.radius * 4.8, hiddenOrbRadius, previousOrbDistance) * 0.35)
+            );
+
+            x = previousX + ((toOrbX / toOrbLength) * continuationStep);
+            y = previousY + ((toOrbY / toOrbLength) * continuationStep);
+            suppressVisibilityCarry = false;
+
+            if (remaining <= continuationStep + 0.001) {
+              continuity.carryToOrb[index] = 0;
+            }
+          } else if (flowTravelT > 0.16) {
+            continuity.carryToOrb[index] = 0;
+          }
+        }
+
         if (hadPreviousFrame) frameSpeed = Math.hypot((x - previousX) - mouseOffsetDeltaX, (y - previousY) - mouseOffsetDeltaY);
+        if (hadPreviousFrame) {
+          const previousOrbDistance = Math.hypot(previousX - orb.x, previousY - orb.y);
+          const currentOrbDistance = Math.hypot(x - orb.x, y - orb.y);
+
+          if (
+            previousOrbDistance < orb.radius
+            && currentOrbDistance > orb.radius
+            && (flowMask < 0.001 || flowTravelT > 0.12 || currentOrbDistance < orb.radius * 1.42)
+          ) {
+            const keepBehindRadius = hiddenOrbRadius;
+            const keepBehind = keepBehindRadius / Math.max(0.0001, currentOrbDistance);
+            x = orb.x + ((x - orb.x) * keepBehind);
+            y = orb.y + ((y - orb.y) * keepBehind);
+          }
+        }
+        const orbHomeMask = particle.inwardCycleOrbMask ?? 0;
+        if (orbHomeMask > 0.44 && flowMask < 0.22) {
+          const fromOrbX = x - orb.x;
+          const fromOrbY = y - orb.y;
+          const fromOrbDistance = Math.hypot(fromOrbX, fromOrbY);
+          const maxOrbHomeDistance = hiddenOrbRadius;
+
+          if (fromOrbDistance > maxOrbHomeDistance) {
+            const pullInside = maxOrbHomeDistance / Math.max(0.0001, fromOrbDistance);
+            x = orb.x + (fromOrbX * pullInside);
+            y = orb.y + (fromOrbY * pullInside);
+          }
+        }
         continuity.previousX[index] = x;
         continuity.previousY[index] = y;
         continuity.initialized[index] = 1;
@@ -1516,131 +1566,163 @@ function UnifiedPointCloud({ data, controls }) {
       const gatherMask = smoothstep(8, 90, mouseDisp);
       const normalSize = sizeScale * orbSizeBoost * 1.2;
       travelSizeScale = lerp(travelSizeScale, 1, gatherMask);
-      // Size follows the dense ZONE the dot is currently IN (looked up from the
-      // density field at its CURRENT position), not the home it came from. So a dot
-      // that enters from below and crosses the bottom zone is BIG the whole way
-      // across, and only eases to NORMAL as it leaves into the open — and a dot the
-      // cursor drags out of the zone shrinks because the field is sparse where it
-      // ends up. The orb + its halo are part of the field too, so that whole region
-      // is one smooth big zone (no artificial ring, no dark band around it).
-      // flowMask is 0 for orb-interior dots.
-      const currentConc = sampleDensityField(data.densityField, x + halfWidth, halfHeight - y);
+      // Size follows the dense ZONE the dot is currently in.
+      const currentConc = sampleDensityField(data.sizeDensityField ?? data.densityField, x + halfWidth, halfHeight - y);
       const inDenseZone = smoothstep(0.22, 0.62, currentConc);
       const towardNormal = clamp(denseExitShrinkControl, 0, 1) * flowMask * (1 - inDenseZone);
       if (size > normalSize) {
         size = lerp(size, normalSize, towardNormal);
       }
-      // Flowing dots fade as they sink into the orb (so they dissolve on arrival).
-      const enteringSolidOrb = smoothstep(0.82, 0.62, renderedOrbEdge);
-      // The orb's OWN dots (home on/near the orb — higher orbMask) are hidden
-      // entirely, so the orb has no static dots of its own oscillating in and out.
-      // Only the dots flowing IN from the field are seen near the orb.
-      const orbOwnHide = 1 - smoothstep(0.12, 0.32, particle.inwardCycleOrbMask ?? 0);
-      const mergeVisibility = 1 - ((controls.orbSolidFill ?? 0) * enteringSolidOrb);
-      // Single MAX size for the whole layout — no dot (anywhere, incl. the orb halo)
-      // renders bigger than the big dots down below. Applied as a cap on nextSize.
+      const visibleTravelDistance = Math.hypot(x - particle.baseX, y - particle.baseY);
+      const visibleLeftHome = smoothstep(10, 86, visibleTravelDistance) * flowMask;
+      const travelNormalSize = controls.globalDotSize * controls.backgroundDotSize * orbSizeBoost * 0.82;
+      const travelShrink = clamp(denseExitShrinkControl, 0, 1)
+        * Math.max(flowLeftHome, visibleLeftHome)
+        * (1 - (inDenseZone * 0.35));
+      if (size > travelNormalSize) {
+        size = lerp(size, travelNormalSize, travelShrink);
+      }
+      const alphaDensityBoost = flowMask > 0.001 ? densityBoost * inDenseZone : densityBoost;
+      alpha *= lerp(1, 1.7, alphaDensityBoost);
+      const enteringSolidOrb = 0;
+      const mergeVisibility = 1;
+      // Single MAX size for the whole layout. Bold dots should only come from dense
+      // zones, never from the fact that a dot is approaching the orb.
       const maxSize = controls.globalDotSize * 4.4;
-      // Grow to the max size ONLY right at the orb's surface (a narrow ring,
-      // e ~1.5 → 1.05), so a dot looks big as it merges in — while the wider
-      // approach/convergence flow stays its normal size, so there's no long "stream
-      // of big dots" (the old wide growth, e 2.2→1.0, made the whole convergence big).
-      const orbSurfaceGrow = orb ? smoothstep(1.5, 1.05, renderedOrbEdge) : 0;
       const finalSize = size * travelSizeScale;
-      // Global MINIMUM dot size: no dot renders smaller than this away from the orb,
-      // so the small low-tone zones (the "red zone" dust) come up to ~normal size —
-      // two sizes only, big + normal, never tiny. Eases to 0 right at the orb so the
-      // merge/dissolve still works. Coefficient is the tuning knob (1.7×globalDotSize
-      // ≈ 3.0; raise it for a bigger floor, lower it for smaller).
-      const journeySizeFloor = lerp(controls.globalDotSize * 1.7, 0, enteringSolidOrb);
+      // Keep a minimum only for moving flow dots. A global floor made the static
+      // low-tone field too uniform and exposed the source sampling grid.
+      const journeySizeFloor = controls.globalDotSize * FLOW_MIN_VISIBLE_SIZE * flowMask;
+      const minVisibleFlowSize = controls.globalDotSize * FLOW_MIN_VISIBLE_SIZE;
 
       let nextSize = Math.min(Math.max(finalSize, journeySizeFloor) * mergeVisibility * wrapSizeMul, maxSize);
-      // Grow to the max size at the orb's surface — applied AFTER the recycle-shrink
-      // (wrapSizeMul) which would otherwise keep arriving dots small there.
-      nextSize = lerp(nextSize, maxSize, orbSurfaceGrow);
-  let nextAlpha = alpha * mergeVisibility * orbOwnHide;
+      let nextAlpha = alpha * mergeVisibility;
 
-  if (continuity && orb) {
-    const renderInViewport = x > -halfWidth - viewportMargin
-      && x < halfWidth + viewportMargin
-      && y > -halfHeight - viewportMargin
-      && y < halfHeight + viewportMargin;
-    const renderInsideOrb = renderedOrbDistance < orb.radius * 0.84;
-    const wantsVisible = nextAlpha > 0.001 && nextSize > 0.05;
-    const wasVisible = continuity.renderedVisible[index] === 1;
+      if (continuity && orb) {
+        const renderInViewport = x > -halfWidth - viewportMargin
+          && x < halfWidth + viewportMargin
+          && y > -halfHeight - viewportMargin
+          && y < halfHeight + viewportMargin;
+        const renderInStage = x > -halfWidth
+          && x < halfWidth
+          && y > -halfHeight
+          && y < halfHeight;
+        const renderNearStageEdge = x < -halfWidth + 34
+          || x > halfWidth - 34
+          || y < -halfHeight + 34
+          || y > halfHeight - 34;
+        const renderInsideOrb = renderedOrbDistance < orb.radius;
+        const wantsVisible = nextAlpha > 0.001 && nextSize > 0.05;
+        const wasVisible = continuity.renderedVisible[index] === 1;
 
-    if (
-      hadPreviousFrame
-      && wasVisible
-      && renderInViewport
-      && !renderInsideOrb
-    ) {
-      const previousSize = continuity.previousSize[index];
-      const previousAlpha = continuity.previousAlpha[index];
+        if (
+          hadPreviousFrame
+          && wasVisible
+          && renderInViewport
+          && !renderInsideOrb
+          && !suppressVisibilityCarry
+        ) {
+          const previousSize = continuity.previousSize[index];
+          const previousAlpha = continuity.previousAlpha[index];
 
-      if (previousSize > 0.05) {
-        nextSize = clamp(nextSize, previousSize * 0.84, previousSize * 1.2);
-      }
+          if (previousSize > 0.05) {
+            const frameRatio = safeDelta * 60;
+            const shrinkingFloor = flowMask > 0.001
+              ? Math.max(previousSize * Math.pow(FLOW_SIZE_SHRINK_PER_FRAME, frameRatio), minVisibleFlowSize)
+              : previousSize * 0.94;
+            const growingCeil = previousSize * (flowMask > 0.001
+              ? Math.pow(FLOW_SIZE_GROW_PER_FRAME, frameRatio)
+              : 1.12);
+            nextSize = clamp(nextSize, shrinkingFloor, growingCeil);
+          }
 
-      if (!wantsVisible) {
-        nextSize = Math.max(nextSize, previousSize * 0.9);
-      }
+          if (!wantsVisible) {
+            nextSize = Math.max(nextSize, previousSize * 0.9);
+          }
 
-      nextAlpha = Math.max(nextAlpha, previousAlpha * 0.97);
-    }
+          nextAlpha = Math.max(nextAlpha, previousAlpha * 0.97);
+        }
 
-    // A dot that was invisible last frame bypasses the size clamp above (there's no
-    // previous size to clamp against), so it could appear at full big size in a
-    // single frame — a fat dot "from nothing". Cap an appearing dot at the NORMAL
-    // size WITHOUT the orb boost, so near the orb it appears as a normal dot and then
-    // the clamp grows it into a fat one over the next frames (a normal dot arriving
-    // and swelling, not a fat dot popping in). Elsewhere this equals normalSize, so
-    // nothing changes; small dots appear at their own size.
-    const appearCap = sizeScale * 1.2;
-    if (hadPreviousFrame && !wasVisible && nextSize > appearCap) {
-      nextSize = appearCap;
-    }
+        // A dot that was invisible last frame bypasses the size clamp above (there's no
+        // previous size to clamp against), so it could appear at full big size in a
+        // single frame — a fat dot "from nothing". Cap an appearing dot at the NORMAL
+        // size WITHOUT the orb boost, so near the orb it appears as a normal dot and then
+        // the clamp grows it into a fat one over the next frames (a normal dot arriving
+        // and swelling, not a fat dot popping in). Elsewhere this equals normalSize, so
+        // nothing changes; small dots appear at their own size.
+        const appearCap = sizeScale * 1.2;
+        if (hadPreviousFrame && !wasVisible && nextSize > appearCap) {
+          nextSize = appearCap;
+        }
 
-    continuity.previousSize[index] = nextSize;
-        continuity.previousAlpha[index] = nextAlpha;
-        continuity.renderedVisible[index] = nextAlpha > 0.001 && nextSize > 0.05 ? 1 : 0;
+        // A recycled flow dot may only become visible from the stage edge. If its
+        // internal cycle lands it in the middle while it was not visible, hide that
+        // cycle instead of letting it pop into the viewfinder.
+        if (
+          hadPreviousFrame
+          && flowMask > 0.001
+          && !wasVisible
+          && renderInStage
+          && !renderNearStageEdge
+          && !renderInsideOrb
+        ) {
+          nextAlpha = 0;
+          nextSize = 0;
+        }
       }
 
       // Hovering pulls the slow surface dots toward the cursor, uncovering the
       // fast inward-flow conveyor behind them — which reads as a noise stream
-      // toward the orb. Fade those fast dots, but only near the cursor (where the
-      // uncovering happens); the rest of the field and the calm flow are untouched.
-      // Only AFTER the cursor has left (ghost present but smoothMouse gone) do we
-      // fade the fast conveyor near the last cursor spot, so it doesn't pop into
-      // view on leave. During active hover we do NOT fade here — that was carving
-      // a void around the cursor and making the dots being gathered disappear.
+      // toward the orb. Do not fade alpha here: disappearing mid-flight reads as a
+      // bug. If needed, only damp size, with a floor that keeps small dots visible.
       if (ghost && !smoothMouse && data.primaryOrb) {
         const fadeReach = data.primaryOrb.radius * 3.0;
         const nearCursor = 1 - smoothstep(fadeReach * 0.5, fadeReach, Math.hypot(x - ghost.x, y - ghost.y));
-        nextAlpha *= 1 - (smoothstep(1.6, 3.4, frameSpeed) * nearCursor * ghost.influence);
+        const awayFromOrb = smoothstep(2.1, 2.75, renderedOrbEdge);
+        const streamDampen = smoothstep(1.6, 3.4, frameSpeed) * nearCursor * ghost.influence * awayFromOrb;
+        if (streamDampen > 0.001) {
+          nextSize = Math.max(lerp(nextSize, minVisibleFlowSize, streamDampen * 0.28), minVisibleFlowSize);
+        }
       }
 
-      // The leave-stream (proven with the debug): the dots you gathered are, once
-      // let go, picked up by the conveyor and carried FAST to the orb — they have
-      // a mouse offset AND high frameSpeed. So fade a displaced dot by its speed:
-      // the fast streaking tail dissolves, while the slow gathered cloud (the
-      // life) stays. Plus fade the slow stragglers as they reach the orb. Runs
-      // ALWAYS — a dot displaced by an earlier hover keeps streaming after the
-      // cursor has left the viewframe.
+      // The leave-stream: gathered dots can be picked up by the conveyor and run
+      // fast toward the orb. Keep them visible, but damp their size a touch while
+      // they settle so no artificial channel appears.
       if (data.primaryOrb && mouseOffsetRef.current) {
         const offM = Math.hypot(mouseOffsetRef.current[index * 2], mouseOffsetRef.current[(index * 2) + 1]);
         if (offM > data.primaryOrb.radius * 0.12) {
-          // Fade the speed only of dots that have SETTLED (offset stable) and are
-          // now being carried fast to the orb — the cap-drift / released stream.
+          // Dampen only dots that have SETTLED (offset stable) and are now being
+          // carried fast to the orb — the cap-drift / released stream.
           // A dot the cursor is actively pulling IN has a fast-growing offset
           // (large mouseOffsetDelta); keep those visible even though they're
           // displaced and fast, otherwise the gathering cloud vanishes on hover.
           const offDelta = Math.hypot(mouseOffsetDeltaX, mouseOffsetDeltaY);
           if (offDelta < 0.55) {
-            nextAlpha *= 1 - smoothstep(2.0, 3.5, frameSpeed);
+            const awayFromOrb = smoothstep(2.1, 2.75, renderedOrbEdge);
+            const streamDampen = smoothstep(2.0, 3.5, frameSpeed) * awayFromOrb;
+            if (streamDampen > 0.001) {
+              nextSize = Math.max(lerp(nextSize, minVisibleFlowSize, streamDampen * 0.28), minVisibleFlowSize);
+            }
           }
           // (Removed the near-orb fade that made hovered dots disappear close to the
           // orb — the absorption latch already handles dots that actually reach it.)
         }
+      }
+
+      if (continuity && orb) {
+        const finalRenderInStage = x > -halfWidth
+          && x < halfWidth
+          && y > -halfHeight
+          && y < halfHeight;
+        const finalRenderInsideOrb = renderedOrbDistance < orb.radius;
+        continuity.previousSize[index] = nextSize;
+        continuity.previousAlpha[index] = nextAlpha;
+        continuity.renderedVisible[index] = (
+          nextAlpha > 0.001
+          && nextSize > 0.05
+          && finalRenderInStage
+          && !finalRenderInsideOrb
+        ) ? 1 : 0;
       }
 
       sizes[index] = nextSize;
@@ -1791,11 +1873,19 @@ function SolidOrb({ orb, opacity, color }) {
     return null;
   }
 
+  const occlusionRadius = Math.max(0, orb.radius - ORB_OCCLUSION_INSET);
+
   return html`
-    <mesh position=${[orb.x, orb.y, -0.6]} renderOrder=${1}>
-      <circleGeometry args=${[orb.radius, 160]} />
-      <primitive object=${material} attach="material" />
-    </mesh>
+    <group>
+      <mesh position=${[orb.x, orb.y, -0.6]} renderOrder=${1}>
+        <circleGeometry args=${[orb.radius, 160]} />
+        <primitive object=${material} attach="material" />
+      </mesh>
+      <mesh position=${[orb.x, orb.y, 0.6]} renderOrder=${4}>
+        <circleGeometry args=${[occlusionRadius, 160]} />
+        <primitive object=${material} attach="material" />
+      </mesh>
+    </group>
   `;
 }
 
