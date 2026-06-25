@@ -18,6 +18,382 @@ const ORB_HIDDEN_BUFFER = 16;
 const FLOW_MIN_VISIBLE_SIZE = 0.92;
 const FLOW_SIZE_SHRINK_PER_FRAME = 0.965;
 const FLOW_SIZE_GROW_PER_FRAME = 1.06;
+
+// --- Loop continuity persistence -------------------------------------------------
+// The flow loop takes a few cycles for its continuity state (carry-to-orb, rendered
+// visibility, per-dot history) to settle into the steady rhythm. There's no cheap way
+// to compute that converged state up front, so instead we snapshot it once it HAS
+// settled and restore it on the next load — every reload after the first starts
+// already-synced. Keyed to the exact layout; a different layout just ignores the cache.
+const FLOW_PERSIST_KEY = "pont_flow_continuity_v2";
+const FLOW_PERSIST_AFTER = 70; // sim-seconds before we trust the loop is settled
+// Pre-baked settled state shipped with the site. The layout is deterministic (derived
+// from the reference image, not the viewport), so one baked file is valid for every
+// visitor at any screen size — they all start already-synced, with no warm-up freeze.
+// Generate it once via the ?bakeseed=1 URL flag (downloads flow-seed.json -> public/).
+const FLOW_SEED_URL = new URL("./public/flow-seed.json", window.location.href).href;
+
+function flowSnapshotSig(data) {
+  const n = data.particles.length;
+  let h = (n * 2654435761) >>> 0;
+  const stride = Math.max(1, (n / 64) | 0);
+  for (let i = 0; i < n; i += stride) {
+    const p = data.particles[i];
+    h = (h ^ Math.round(((p.baseX + 4096) * 7.13) + ((p.baseY + 4096) * 3.71))) >>> 0;
+    h = (h * 16777619) >>> 0;
+  }
+  return `${n}_${Math.round(data.width)}x${Math.round(data.height)}_${h}`;
+}
+
+function typedToB64(arr) {
+  const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  let bin = "";
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CH, bytes.length)));
+  }
+  return btoa(bin);
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function buildFlowSnapshot(data, c, elapsed) {
+  return {
+    sig: flowSnapshotSig(data),
+    elapsed,
+    px: typedToB64(c.previousX), py: typedToB64(c.previousY),
+    ps: typedToB64(c.previousSize), pa: typedToB64(c.previousAlpha),
+    rv: typedToB64(c.renderedVisible), ini: typedToB64(c.initialized),
+    cto: typedToB64(c.carryToOrb),
+  };
+}
+
+// Apply a parsed snapshot object (from localStorage OR the baked file) onto the
+// continuity arrays. Returns the snapshot's elapsed, or null if it doesn't match
+// this layout / is malformed.
+function applyFlowSnapshot(data, c, s) {
+  try {
+    if (!s || s.sig !== flowSnapshotSig(data)) return null;
+    const setF = (arr, b64) => { const b = b64ToBytes(b64); if (b.byteLength !== arr.byteLength) throw 0; arr.set(new Float32Array(b.buffer)); };
+    const setU = (arr, b64) => { const b = b64ToBytes(b64); if (b.byteLength !== arr.byteLength) throw 0; arr.set(b); };
+    setF(c.previousX, s.px); setF(c.previousY, s.py);
+    setF(c.previousSize, s.ps); setF(c.previousAlpha, s.pa);
+    setU(c.renderedVisible, s.rv); setU(c.initialized, s.ini);
+    setU(c.carryToOrb, s.cto);
+    return typeof s.elapsed === "number" ? s.elapsed : null;
+  } catch (e) { return null; }
+}
+
+function saveFlowSnapshot(data, c, elapsed) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(FLOW_PERSIST_KEY, JSON.stringify(buildFlowSnapshot(data, c, elapsed)));
+  } catch (e) { /* storage full/unavailable — fine, just no fast-start */ }
+}
+
+function restoreFlowSnapshot(data, c) {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(FLOW_PERSIST_KEY);
+    if (!raw) return null;
+    return applyFlowSnapshot(data, c, JSON.parse(raw));
+  } catch (e) { return null; }
+}
+
+// Fetch the baked seed shipped with the site. Returns the parsed object, or null if
+// it's missing (e.g. not baked yet) — the caller falls back to a cold start.
+async function fetchFlowSeed() {
+  try {
+    if (typeof fetch === "undefined") return null;
+    const res = await fetch(FLOW_SEED_URL, { cache: "force-cache" });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) { return null; }
+}
+
+// Dev helper (?bakeseed=1): download the computed snapshot as flow-seed.json.
+function downloadFlowSeed(snapshot) {
+  try {
+    const blob = new Blob([JSON.stringify(snapshot)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "flow-seed.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (typeof console !== "undefined") console.log("[pont] baked flow-seed.json — move it into public/");
+  } catch (e) { /* download blocked — the snapshot is still in localStorage */ }
+}
+
+// Cold-start warm-up. The flow loop's settle (the field "emptying" for the first
+// few cycles) is the continuity state — carry-to-orb + previous positions — ringing
+// up to its steady rhythm from a cold start. There's no closed form for that limit
+// cycle, so we pre-roll ONLY the load-bearing part (the inward-cycle macro position
+// + the carry/keep-behind bookkeeping) for FLOW_WARMUP_SECONDS of sim time, off
+// the cosmetic layers (living/micro/wander/alive/hover/drift...). Those layers are
+// small jitter that don't change which dots are visible / near the orb, so the
+// converged carry state matches what the live loop would reach — just without the
+// per-frame cost of the full update. On the final frame we also seed size/alpha/
+// renderedVisible so the first live frame inherits a post-frame state and doesn't
+// blink mid-stage dots or grow them from dust. Only flowing dots are touched; the
+// static field falls through to its normal first-frame path.
+const FLOW_WARMUP_SECONDS = 75; // sim-seconds to pre-roll (past the ~4-5 loop settle)
+function warmUpFlowContinuity(data, c, controls) {
+  const orb = data.primaryOrb;
+  if (!orb || !data.particles || data.particles.length === 0) return null;
+
+  const t0 = (typeof performance !== "undefined") ? performance.now() : 0;
+  const halfWidth = data.width / 2;
+  const halfHeight = data.height / 2;
+  const viewportMargin = 24;
+  const visibleJumpLimit = 86;
+  const hiddenOrbRadius = Math.max(0, orb.radius - ORB_OCCLUSION_INSET - ORB_HIDDEN_BUFFER);
+
+  // Derived controls — must match the live useFrame derivations exactly.
+  const globalMotion = 0.16 + ((controls.globalMotion ?? 1) * 0.84);
+  const globalSpeed = controls.globalSpeed ?? 1;
+  const flowSpeedControl = controls.flowSpeed ?? 1;
+  const inwardFlowControl = controls.inwardFlow ?? 1;
+  const flowDistanceControl = controls.flowDistance ?? 1;
+  const respawnSpreadControl = controls.respawnSpread ?? 1;
+  const mergeReachControl = controls.mergeReach ?? 1;
+  const flowArcControl = controls.flowArc ?? 1;
+  const cohesion = clamp((controls.motionCohesion ?? 1.12) / 1.8, 0, 1);
+  const hoverSpacingControl = clamp(controls.hoverSpacing ?? 1.2, 0, 1.8);
+  const spacingCoherence = clamp(hoverSpacingControl / 1.8, 0, 1);
+  const arcMotionScale = 1 - clamp(spacingCoherence * 0.82, 0, 0.82);
+  const maxSize = (controls.globalDotSize ?? 1) * 4.4;
+
+  // Precompute the per-particle constants (everything that doesn't depend on
+  // elapsed) once, so the frame loop only recomputes the cycle phase + carry.
+  const pre = [];
+  for (let index = 0; index < data.particles.length; index += 1) {
+    const particle = data.particles[index];
+    if ((particle.inwardCycleSpan ?? 0) <= 0.001) continue;
+
+    const inwardPhase = lerpCycle(
+      particle.inwardCyclePhase,
+      particle.coherentInwardCyclePhase ?? particle.inwardCyclePhase,
+      cohesion
+    );
+    const inwardSpeed = lerp(
+      particle.inwardCycleSpeed,
+      particle.coherentInwardCycleSpeed ?? particle.inwardCycleSpeed,
+      cohesion * 0.88
+    );
+    const rate = inwardSpeed * (0.88 + (globalSpeed * 0.26)) * flowSpeedControl;
+    const motionAmount = (0.86 + (globalMotion * 0.36)) * inwardFlowControl;
+    const outer = (particle.inwardCycleOuter ?? (particle.inwardCycleSpan * 0.48)) * motionAmount * respawnSpreadControl;
+    const source = (particle.inwardCycleSource ?? (particle.inwardCycleSpan * 0.14)) * motionAmount * (0.76 + (respawnSpreadControl * 0.24));
+    const arrival = (particle.inwardCycleArrivalSpan ?? (particle.inwardCycleSpan * 0.38)) * motionAmount * flowDistanceControl;
+    const merge = (particle.inwardCycleMerge ?? 3.2) * motionAmount * mergeReachControl;
+    const orbLoopMask = particle.inwardCycleOrbMask ?? 0;
+    const offscreen = Math.max(
+      outer + (source * 0.35),
+      particle.inwardCycleOffscreen ?? (outer + source)
+    ) * (1 + (respawnSpreadControl * 0.26));
+    const fullArrival = (particle.inwardCycleToOrb ?? arrival) * motionAmount * (0.92 + (flowDistanceControl * 0.18));
+    const orbStaticMask = smoothstep(0.22, 0.5, orbLoopMask);
+    const activeFlowMask = 1 - orbStaticMask;
+    const fieldPathEnd = fullArrival + (merge * 0.62) + ORB_HIDDEN_BUFFER;
+
+    const backgroundMix = clamp(1 - particle.concentration, 0, 1);
+    const speedScale = (controls.globalSpeed ?? 1)
+      * lerp(controls.foregroundSpeed ?? 1, controls.backgroundSpeed ?? 1, backgroundMix);
+
+    // Resting (home) size, for seeding previousSize on the handover frame.
+    const sizeScale = (controls.globalDotSize ?? 1)
+      * lerp(controls.foregroundDotSize ?? 1, controls.backgroundDotSize ?? 1, backgroundMix);
+    const orbInteriorSize = smoothstep(0.62, 0.94, orbLoopMask);
+    const orbSizeBoost = 1 + (orbInteriorSize * ((controls.orbDotSize ?? 1) - 1));
+    const densityBoost = smoothstep(0.04, 0.24, particle.concentration) * (1 - orbLoopMask);
+    const restSize = Math.min(particle.size * sizeScale * orbSizeBoost * lerp(1, 1.5, densityBoost), maxSize);
+
+    pre.push({
+      index,
+      baseX: particle.baseX,
+      baseY: particle.baseY,
+      rate,
+      inwardPhase,
+      merge,
+      edgeMask: particle.inwardCycleEdgeMask ?? 0,
+      activeFlowMask,
+      pathStart: lerp(-offscreen, 0, orbStaticMask),
+      pathEnd: lerp(fieldPathEnd, 0, orbStaticMask),
+      cx: particle.inwardCycleX,
+      cy: particle.inwardCycleY,
+      nx: particle.inwardCycleNormalX,
+      ny: particle.inwardCycleNormalY,
+      arcCoef: particle.inwardCycleArc * (outer + arrival) * 0.34 * flowArcControl * arcMotionScale,
+      absArcCoef: particle.inwardCycleAbsArc ?? 0,
+      orbHomeMask: orbLoopMask,
+      speedScale,
+      baseYGate: particle.baseY > orb.y - (orb.radius * 0.18),
+      restSize,
+      restAlpha: particle.alpha,
+    });
+  }
+
+  const dt = 1 / 60;
+  const frames = Math.max(1, Math.round(FLOW_WARMUP_SECONDS * 60));
+  const orbX = orb.x;
+  const orbY = orb.y;
+  const orbR = orb.radius;
+  const h = (a, b) => Math.sqrt((a * a) + (b * b)); // local hypot, faster in the hot loop
+  let elapsed = 0;
+
+  for (let f = 0; f < frames; f += 1) {
+    elapsed += dt;
+    const isLast = f === frames - 1;
+
+    for (let k = 0; k < pre.length; k += 1) {
+      const P = pre[k];
+      const index = P.index;
+
+      // --- inward-cycle macro position (mirrors the live flow block) ---
+      const rawCycle = (elapsed * P.rate) + P.inwardPhase;
+      const loop = rawCycle - Math.floor(rawCycle);
+      const travelT = 1 - Math.pow(1 - loop, 1.28);
+      let pathPosition = P.pathStart + ((P.pathEnd - P.pathStart) * travelT);
+      let arcT = Math.sin(travelT * Math.PI);
+      if (P.edgeMask > 0.001) {
+        const entryT = smoothstep(0.54, 1, travelT);
+        pathPosition += P.edgeMask * entryT * P.merge * 0.36;
+        arcT *= lerp(1, 0.32, P.edgeMask);
+      }
+      pathPosition *= P.activeFlowMask;
+      arcT *= P.activeFlowMask;
+      const flowMask = P.activeFlowMask;
+      const arcTotal = (P.arcCoef + P.absArcCoef) * arcT;
+      let x = P.baseX + (P.cx * pathPosition) + (P.nx * arcTotal);
+      let y = P.baseY + (P.cy * pathPosition) + (P.ny * arcTotal);
+
+      // --- carry / keep-behind bookkeeping (mouse deltas = 0 here) ---
+      const previousX = c.previousX[index];
+      const previousY = c.previousY[index];
+      const hadPreviousFrame = c.initialized[index] === 1;
+
+      if (hadPreviousFrame) {
+        const previousInViewport = previousX > -halfWidth - viewportMargin
+          && previousX < halfWidth + viewportMargin
+          && previousY > -halfHeight - viewportMargin
+          && previousY < halfHeight + viewportMargin;
+        const currentInViewport = x > -halfWidth - viewportMargin
+          && x < halfWidth + viewportMargin
+          && y > -halfHeight - viewportMargin
+          && y < halfHeight + viewportMargin;
+        const prevOrbDist = h(previousX - orbX, previousY - orbY);
+        const previousInsideOrb = prevOrbDist < orbR * 0.9;
+        const currentInsideOrb = h(x - orbX, y - orbY) < orbR * 0.9;
+        const jumpDistance = h(x - previousX, y - previousY);
+
+        if (
+          previousInViewport
+          && currentInViewport
+          && !previousInsideOrb
+          && !currentInsideOrb
+          && jumpDistance > visibleJumpLimit
+          && P.baseYGate
+        ) {
+          const toOrbX = orbX - previousX;
+          const toOrbY = orbY - previousY;
+          const toOrbLength = Math.max(1, h(toOrbX, toOrbY));
+          const continuityStep = Math.min(jumpDistance, 1.2 + (P.speedScale * 0.25) + (flowSpeedControl * 0.35));
+          x = previousX + ((toOrbX / toOrbLength) * continuityStep);
+          y = previousY + ((toOrbY / toOrbLength) * continuityStep);
+        }
+
+        const arriveEdge = h(x - orbX, y - orbY) / orbR;
+        if (arriveEdge < 1.5 && arriveEdge > 0.85) {
+          const ownDx = x - previousX;
+          const ownDy = y - previousY;
+          const ownStep = h(ownDx, ownDy);
+          const maxStep = 1.8 + (smoothstep(1.05, 1.5, arriveEdge) * 2.4);
+          if (ownStep > maxStep) {
+            const fr = maxStep / ownStep;
+            x = previousX + (ownDx * fr);
+            y = previousY + (ownDy * fr);
+          }
+        }
+
+        if (flowMask > 0.001) {
+          const recycleWhileVisible = travelT < 0.08
+            && previousInViewport
+            && prevOrbDist > hiddenOrbRadius
+            && prevOrbDist < orbR * 6.2;
+          const carryingToOrb = c.carryToOrb[index] === 1 || recycleWhileVisible;
+
+          if (carryingToOrb) {
+            c.carryToOrb[index] = 1;
+            const toOrbX = orbX - previousX;
+            const toOrbY = orbY - previousY;
+            const toOrbLength = Math.max(0.0001, h(toOrbX, toOrbY));
+            const remaining = Math.max(0, prevOrbDist - hiddenOrbRadius);
+            const continuationStep = Math.min(
+              remaining,
+              0.95 + (flowSpeedControl * 0.25) + (smoothstep(orbR * 4.8, hiddenOrbRadius, prevOrbDist) * 0.35)
+            );
+            x = previousX + ((toOrbX / toOrbLength) * continuationStep);
+            y = previousY + ((toOrbY / toOrbLength) * continuationStep);
+            if (remaining <= continuationStep + 0.001) c.carryToOrb[index] = 0;
+          } else if (travelT > 0.16) {
+            c.carryToOrb[index] = 0;
+          }
+        }
+
+        const curOrbDist = h(x - orbX, y - orbY);
+        if (
+          prevOrbDist < orbR
+          && curOrbDist > orbR
+          && (flowMask < 0.001 || travelT > 0.12 || curOrbDist < orbR * 1.42)
+        ) {
+          const keepBehind = hiddenOrbRadius / Math.max(0.0001, curOrbDist);
+          x = orbX + ((x - orbX) * keepBehind);
+          y = orbY + ((y - orbY) * keepBehind);
+        }
+      }
+
+      if (P.orbHomeMask > 0.44 && flowMask < 0.22) {
+        const fromOrbX = x - orbX;
+        const fromOrbY = y - orbY;
+        const fromOrbDistance = h(fromOrbX, fromOrbY);
+        if (fromOrbDistance > hiddenOrbRadius) {
+          const pullInside = hiddenOrbRadius / Math.max(0.0001, fromOrbDistance);
+          x = orbX + (fromOrbX * pullInside);
+          y = orbY + (fromOrbY * pullInside);
+        }
+      }
+
+      c.previousX[index] = x;
+      c.previousY[index] = y;
+      c.initialized[index] = 1;
+
+      if (isLast) {
+        // Seed a post-frame size/visibility state so the first live frame inherits
+        // continuity (no mid-stage blink, no growing-from-dust).
+        const inStage = x > -halfWidth && x < halfWidth && y > -halfHeight && y < halfHeight;
+        const insideOrb = h(x - orbX, y - orbY) < orbR;
+        const visible = inStage && !insideOrb && P.restSize > 0.05 && P.restAlpha > 0.001;
+        c.previousSize[index] = visible ? P.restSize : 0;
+        c.previousAlpha[index] = visible ? P.restAlpha : 0;
+        c.renderedVisible[index] = visible ? 1 : 0;
+      }
+    }
+  }
+
+  if (t0 && typeof console !== "undefined") {
+    console.log(`[pont] flow warm-up: ${pre.length} dots x ${frames} frames in ${(performance.now() - t0).toFixed(0)}ms`);
+  }
+  return elapsed;
+}
+// ---------------------------------------------------------------------------------
 const MOTION_CONTROLS = {
   globalMotion: 0,
   globalSpeed: 0.2,
@@ -953,6 +1329,8 @@ function UnifiedPointCloud({ data, controls }) {
   const smoothMouseRef = useRef(null);
   const mouseGhostRef = useRef(null);
   const elapsedRef = useRef(0);
+  const flowSnapshotSavedRef = useRef(false);
+  const flowSeedPendingRef = useRef(false);
   const burstRef = useRef([]);
   const burstGeoRef = useRef(null);
   const pressingRef = useRef(false);
@@ -991,6 +1369,44 @@ function UnifiedPointCloud({ data, controls }) {
     };
     mouseOffsetRef.current = new Float32Array(data.particles.length * 2);
     mouseVelRef.current = new Float32Array(data.particles.length * 2);
+
+    let cancelled = false;
+    flowSeedPendingRef.current = false;
+
+    // Resolve the loop's start state, cheapest-first:
+    // 1) localStorage snapshot (instant — returning visitors / dev after one settle).
+    // 2) the baked seed file shipped with the site (instant fetch, valid for everyone).
+    // 3) cold start (no freeze) — settles over a few cycles, then saves for next time.
+    const restoredElapsed = restoreFlowSnapshot(data, continuityRef.current);
+    if (restoredElapsed != null) {
+      elapsedRef.current = restoredElapsed;
+      flowSnapshotSavedRef.current = true;
+    } else if (typeof window !== "undefined" && /[?&]bakeseed=1\b/.test(window.location.search)) {
+      // Dev-only: pre-roll the loop to its settled state, then download the seed file
+      // to drop into public/. This is the ONLY place the (blocking) warm-up runs.
+      flowSnapshotSavedRef.current = true;
+      const warmedElapsed = warmUpFlowContinuity(data, continuityRef.current, controls);
+      if (warmedElapsed != null) elapsedRef.current = warmedElapsed;
+      downloadFlowSeed(buildFlowSnapshot(data, continuityRef.current, elapsedRef.current));
+    } else {
+      // Hold on frame 0 (a full, still field) while we fetch the baked seed, so the
+      // cold settle is never shown. The fetch is a small same-origin file (~tens of ms).
+      flowSnapshotSavedRef.current = false;
+      flowSeedPendingRef.current = true;
+      fetchFlowSeed()
+        .then((seed) => {
+          if (cancelled || !continuityRef.current) return;
+          const seededElapsed = seed ? applyFlowSnapshot(data, continuityRef.current, seed) : null;
+          if (seededElapsed != null) {
+            elapsedRef.current = seededElapsed;
+            flowSnapshotSavedRef.current = true; // already settled; don't overwrite
+          }
+          flowSeedPendingRef.current = false; // start animating (settled, or cold fallback)
+        })
+        .catch(() => { if (!cancelled) flowSeedPendingRef.current = false; });
+    }
+
+    return () => { cancelled = true; flowSeedPendingRef.current = false; };
   }, [data]);
 
   useEffect(() => {
@@ -1053,7 +1469,13 @@ function UnifiedPointCloud({ data, controls }) {
     }
 
     const safeDelta = clamp(delta || (1 / 60), 1 / 120, 1 / 24);
-    elapsedRef.current += safeDelta;
+    // While the baked seed is still loading, hold on frame 0 (a full, still field)
+    // instead of advancing into the cold settle. Cleared the moment the seed resolves.
+    if (flowSeedPendingRef.current) {
+      elapsedRef.current = 0;
+    } else {
+      elapsedRef.current += safeDelta;
+    }
     const elapsed = elapsedRef.current;
 
     const mousePos = mousePosRef.current;
@@ -1732,6 +2154,13 @@ function UnifiedPointCloud({ data, controls }) {
     geometry.attributes.position.needsUpdate = true;
     geometry.attributes.aSize.needsUpdate = true;
     geometry.attributes.aAlpha.needsUpdate = true;
+
+    // Once the loop has run long enough to settle, snapshot its continuity so the next
+    // load can start already-synced. Saved once per session.
+    if (!flowSnapshotSavedRef.current && continuity && elapsed > FLOW_PERSIST_AFTER) {
+      flowSnapshotSavedRef.current = true;
+      saveFlowSnapshot(data, continuity, elapsed);
+    }
 
     // Genki Dama. Hold the mouse: energy dots spawn around the cursor and are
     // SUCKED into it, pooling there (the charge). Release (mouseup): every
