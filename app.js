@@ -202,7 +202,23 @@ function warmUpFlowContinuity(data, c, controls) {
     const fullArrival = (particle.inwardCycleToOrb ?? arrival) * motionAmount * (0.92 + (flowDistanceControl * 0.18));
     const orbStaticMask = smoothstep(0.22, 0.5, orbLoopMask);
     const activeFlowMask = 1 - orbStaticMask;
-    const fieldPathEnd = fullArrival + (merge * 0.62) + ORB_HIDDEN_BUFFER;
+    const bottomPathStart = getBottomEntryPathStart(
+      particle.baseY,
+      particle.inwardCycleY,
+      data.height,
+      viewportMargin,
+      -offscreen
+    );
+    const loosePathEnd = fullArrival + (merge * 0.62) + ORB_HIDDEN_BUFFER;
+    const fieldPathEnd = getOrbAbsorbPathEnd(
+      particle.baseX,
+      particle.baseY,
+      particle.inwardCycleX,
+      particle.inwardCycleY,
+      orb,
+      hiddenOrbRadius,
+      loosePathEnd
+    );
 
     const backgroundMix = clamp(1 - particle.concentration, 0, 1);
     const speedScale = (controls.globalSpeed ?? 1)
@@ -225,7 +241,7 @@ function warmUpFlowContinuity(data, c, controls) {
       merge,
       edgeMask: particle.inwardCycleEdgeMask ?? 0,
       activeFlowMask,
-      pathStart: lerp(-offscreen, 0, orbStaticMask),
+      pathStart: lerp(bottomPathStart, 0, orbStaticMask),
       pathEnd: lerp(fieldPathEnd, 0, orbStaticMask),
       cx: particle.inwardCycleX,
       cy: particle.inwardCycleY,
@@ -900,6 +916,36 @@ function getOffscreenDistanceFromPoint(x, y, directionX, directionY, width, heig
   const exitDistance = positiveDistances.length > 0 ? Math.min(...positiveDistances) : margin;
 
   return exitDistance + margin;
+}
+
+function getBottomEntryPathStart(baseY, directionY, height, margin, fallbackPathStart) {
+  if (directionY <= 0.0001) return fallbackPathStart;
+
+  const bottomY = -(height / 2) - margin;
+  const bottomPathStart = (bottomY - baseY) / directionY;
+
+  return Math.min(fallbackPathStart, bottomPathStart);
+}
+
+function getOrbAbsorbPathEnd(baseX, baseY, directionX, directionY, orb, hiddenRadius, fallbackPathEnd) {
+  if (!orb || hiddenRadius <= 0.0001) return fallbackPathEnd;
+
+  const toCenterX = orb.x - baseX;
+  const toCenterY = orb.y - baseY;
+  const centerProjection = (toCenterX * directionX) + (toCenterY * directionY);
+
+  if (centerProjection <= 0) return fallbackPathEnd;
+
+  const centerDistanceSq = (toCenterX * toCenterX) + (toCenterY * toCenterY);
+  const perpendicularSq = Math.max(0, centerDistanceSq - (centerProjection * centerProjection));
+  const hiddenRadiusSq = hiddenRadius * hiddenRadius;
+
+  if (perpendicularSq >= hiddenRadiusSq) return fallbackPathEnd;
+
+  const hiddenChord = Math.sqrt(hiddenRadiusSq - perpendicularSq);
+  const absorbedPathEnd = centerProjection + (hiddenChord * 0.32) + ORB_HIDDEN_BUFFER;
+
+  return Math.max(fallbackPathEnd, absorbedPathEnd);
 }
 
 function addLivingMotionProperties(store, focus, width, height) {
@@ -1643,8 +1689,24 @@ function UnifiedPointCloud({ data, controls }) {
         // dots ease out of the travel instead of being hard-stopped.
         const orbStaticMask = smoothstep(0.22, 0.5, orbLoopMask);
         const activeFlowMask = 1 - orbStaticMask;
-        const pathStart = lerp(-offscreen, 0, orbStaticMask);
-        const fieldPathEnd = fullArrival + (merge * 0.62) + ORB_HIDDEN_BUFFER;
+        const bottomPathStart = getBottomEntryPathStart(
+          particle.baseY,
+          particle.inwardCycleY,
+          data.height,
+          viewportMargin,
+          -offscreen
+        );
+        const loosePathEnd = fullArrival + (merge * 0.62) + ORB_HIDDEN_BUFFER;
+        const fieldPathEnd = getOrbAbsorbPathEnd(
+          particle.baseX,
+          particle.baseY,
+          particle.inwardCycleX,
+          particle.inwardCycleY,
+          data.primaryOrb,
+          data.primaryOrb ? Math.max(0, data.primaryOrb.radius - ORB_OCCLUSION_INSET - ORB_HIDDEN_BUFFER) : 0,
+          loosePathEnd
+        );
+        const pathStart = lerp(bottomPathStart, 0, orbStaticMask);
         const pathEnd = lerp(fieldPathEnd, 0, orbStaticMask);
         let pathPosition = lerp(pathStart, pathEnd, travelT);
         const pathProgress = travelT;
