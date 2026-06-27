@@ -144,8 +144,12 @@ function downloadFlowSeed(snapshot) {
 // renderedVisible so the first live frame inherits a post-frame state and doesn't
 // blink mid-stage dots or grow them from dust. Only flowing dots are touched; the
 // static field falls through to its normal first-frame path.
-const FLOW_WARMUP_SECONDS = 75; // sim-seconds to pre-roll (past the ~4-5 loop settle)
+// sim-seconds to pre-roll (past the ~4-5 loop settle). Scales inversely with
+// flowSpeed: at the slower default the loops take longer, so we need more sim time
+// to cover the same number of settling loops before baking the seed.
+const FLOW_WARMUP_BASE_SECONDS = 75;
 function warmUpFlowContinuity(data, c, controls) {
+  const FLOW_WARMUP_SECONDS = FLOW_WARMUP_BASE_SECONDS / clamp(controls.flowSpeed ?? 1, 0.1, 1);
   const orb = data.primaryOrb;
   if (!orb || !data.particles || data.particles.length === 0) return null;
 
@@ -414,7 +418,7 @@ const MOTION_CONTROLS = {
   globalMotion: 0,
   globalSpeed: 0.2,
   inwardFlow: 0.04,
-  flowSpeed: 1,
+  flowSpeed: 0.36,
   flowDistance: 0.35,
   respawnSpread: 0.8,
   mergeReach: 0.91,
@@ -480,6 +484,12 @@ const BAYER_8 = [
 // Every other control still exists in MOTION_CONTROLS and runs at its default; it's
 // just hidden here. Add a line back to expose any of them again.
 const CONTROL_GROUPS = [
+  {
+    title: "Flow",
+    items: [
+      { key: "flowSpeed", label: "Flow speed", min: 0.15, max: 2, step: 0.01 },
+    ],
+  },
   {
     title: "Dots",
     items: [
