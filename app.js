@@ -25,7 +25,7 @@ const FLOW_SIZE_GROW_PER_FRAME = 1.06;
 // to compute that converged state up front, so instead we snapshot it once it HAS
 // settled and restore it on the next load — every reload after the first starts
 // already-synced. Keyed to the exact layout; a different layout just ignores the cache.
-const FLOW_PERSIST_KEY = "pont_flow_continuity_v2";
+const FLOW_PERSIST_KEY = "pont_flow_continuity_v3";
 const FLOW_PERSIST_AFTER = 70; // sim-seconds before we trust the loop is settled
 // Pre-baked settled state shipped with the site. The layout is deterministic (derived
 // from the reference image, not the viewport), so one baked file is valid for every
@@ -223,6 +223,10 @@ function warmUpFlowContinuity(data, c, controls) {
       hiddenOrbRadius,
       loosePathEnd
     );
+    const pathStart = lerp(bottomPathStart, 0, orbStaticMask);
+    const pathEnd = lerp(fieldPathEnd, 0, orbStaticMask);
+    const arcSide = Math.sign(particle.inwardCycleArc || particle.inwardCycleAbsArc)
+      || (particle.baseX < orb.x ? 1 : -1);
 
     const backgroundMix = clamp(1 - particle.concentration, 0, 1);
     const speedScale = (controls.globalSpeed ?? 1)
@@ -245,14 +249,18 @@ function warmUpFlowContinuity(data, c, controls) {
       merge,
       edgeMask: particle.inwardCycleEdgeMask ?? 0,
       activeFlowMask,
-      pathStart: lerp(bottomPathStart, 0, orbStaticMask),
-      pathEnd: lerp(fieldPathEnd, 0, orbStaticMask),
+      pathStart,
+      pathEnd,
       cx: particle.inwardCycleX,
       cy: particle.inwardCycleY,
       nx: particle.inwardCycleNormalX,
       ny: particle.inwardCycleNormalY,
       arcCoef: particle.inwardCycleArc * (outer + arrival) * 0.34 * flowArcControl * arcMotionScale,
-      absArcCoef: particle.inwardCycleAbsArc ?? 0,
+      absArcCoef: (particle.inwardCycleAbsArc ?? 0) * flowArcControl * arcMotionScale,
+      absorbX: orb.x - (particle.inwardCycleX * hiddenOrbRadius * 0.72),
+      absorbY: orb.y - (particle.inwardCycleY * hiddenOrbRadius * 0.72),
+      carryNormalX: particle.inwardCycleNormalX * arcSide,
+      carryNormalY: particle.inwardCycleNormalY * arcSide,
       orbHomeMask: orbLoopMask,
       speedScale,
       baseYGate: particle.baseY > orb.y - (orb.radius * 0.18),
@@ -267,6 +275,7 @@ function warmUpFlowContinuity(data, c, controls) {
   const orbY = orb.y;
   const orbR = orb.radius;
   const h = (a, b) => Math.sqrt((a * a) + (b * b)); // local hypot, faster in the hot loop
+  const curvedCarry = { x: 0, y: 0 };
   let elapsed = 0;
 
   for (let f = 0; f < frames; f += 1) {
@@ -352,16 +361,26 @@ function warmUpFlowContinuity(data, c, controls) {
 
           if (carryingToOrb) {
             c.carryToOrb[index] = 1;
-            const toOrbX = orbX - previousX;
-            const toOrbY = orbY - previousY;
-            const toOrbLength = Math.max(0.0001, h(toOrbX, toOrbY));
             const remaining = Math.max(0, prevOrbDist - hiddenOrbRadius);
             const continuationStep = Math.min(
               remaining,
               0.95 + (flowSpeedControl * 0.25) + (smoothstep(orbR * 4.8, hiddenOrbRadius, prevOrbDist) * 0.35)
             );
-            x = previousX + ((toOrbX / toOrbLength) * continuationStep);
-            y = previousY + ((toOrbY / toOrbLength) * continuationStep);
+            advanceCurvedOrbCarry(
+              curvedCarry,
+              previousX,
+              previousY,
+              P.absorbX,
+              P.absorbY,
+              orb,
+              hiddenOrbRadius,
+              continuationStep,
+              P.carryNormalX,
+              P.carryNormalY,
+              flowArcControl
+            );
+            x = curvedCarry.x;
+            y = curvedCarry.y;
             if (remaining <= continuationStep + 0.001) c.carryToOrb[index] = 0;
           } else if (travelT > 0.16) {
             c.carryToOrb[index] = 0;
@@ -958,6 +977,57 @@ function getOrbAbsorbPathEnd(baseX, baseY, directionX, directionY, orb, hiddenRa
   return Math.max(fallbackPathEnd, absorbedPathEnd);
 }
 
+function advanceCurvedOrbCarry(
+  out,
+  previousX,
+  previousY,
+  targetX,
+  targetY,
+  orb,
+  hiddenRadius,
+  maxStep,
+  outwardNormalX,
+  outwardNormalY,
+  flowArc
+) {
+  const toTargetX = targetX - previousX;
+  const toTargetY = targetY - previousY;
+  const toTargetLength = Math.max(0.0001, Math.hypot(toTargetX, toTargetY));
+  const targetDirectionX = toTargetX / toTargetLength;
+  const targetDirectionY = toTargetY / toTargetLength;
+  const orbDistance = Math.hypot(previousX - orb.x, previousY - orb.y);
+  const curveEnvelope = smoothstep(
+    Math.max(hiddenRadius, orb.radius * 1.08),
+    orb.radius * 2.9,
+    orbDistance
+  );
+  const curveStrength = clamp(flowArc, 0, 3) * 0.82 * curveEnvelope;
+  const normalAlongTarget = (outwardNormalX * targetDirectionX) + (outwardNormalY * targetDirectionY);
+  let tangentX = outwardNormalX - (targetDirectionX * normalAlongTarget);
+  let tangentY = outwardNormalY - (targetDirectionY * normalAlongTarget);
+  const tangentLength = Math.hypot(tangentX, tangentY);
+  if (tangentLength > 0.0001) {
+    tangentX /= tangentLength;
+    tangentY /= tangentLength;
+  }
+  let directionX = targetDirectionX + (tangentX * curveStrength);
+  let directionY = targetDirectionY + (tangentY * curveStrength);
+  const directionLength = Math.max(0.0001, Math.hypot(directionX, directionY));
+  directionX /= directionLength;
+  directionY /= directionLength;
+
+  const fromOrbX = previousX - orb.x;
+  const fromOrbY = previousY - orb.y;
+  const targetOrbDistance = Math.max(hiddenRadius, orbDistance - maxStep);
+  const radialProjection = (fromOrbX * directionX) + (fromOrbY * directionY);
+  const radialDelta = (orbDistance * orbDistance) - (targetOrbDistance * targetOrbDistance);
+  const radialDiscriminant = Math.max(0, (radialProjection * radialProjection) - radialDelta);
+  const radialStep = Math.max(0, -radialProjection - Math.sqrt(radialDiscriminant));
+  const step = Math.min(radialStep, toTargetLength);
+  out.x = previousX + (directionX * step);
+  out.y = previousY + (directionY * step);
+}
+
 function addLivingMotionProperties(store, focus, width, height) {
   const offscreenMargin = Math.max(28, focus.radius * 0.26);
 
@@ -1094,7 +1164,7 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.inwardCycleNormalX = -inwardY;
     particle.inwardCycleNormalY = inwardX;
     particle.inwardCycleArc = arcSide * (0.4 + (hash01(particle.baseX, particle.baseY, 8221) * 0.6)) * (0.45 + (fieldMask * 1.35));
-    particle.inwardCycleAbsArc = arcSide * cycleFieldMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 0.15;
+    particle.inwardCycleAbsArc = arcSide * fieldMask * cycleFlowMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 1.25;
     particle.inwardCycleArrival = orbMask;
   }
 }
@@ -1616,6 +1686,7 @@ function UnifiedPointCloud({ data, controls }) {
     const cohesion = clamp((controls.motionCohesion ?? 1.12) / 1.8, 0, 1);
     const sparseMotion = 0.18 + ((controls.backgroundMotion ?? 1) * 0.82);
     const denseMotion = 0.18 + ((controls.foregroundMotion ?? 1) * 0.82);
+    const curvedCarry = { x: 0, y: 0 };
 
     for (let index = 0; index < data.particles.length; index += 1) {
       const particle = data.particles[index];
@@ -1665,6 +1736,10 @@ function UnifiedPointCloud({ data, controls }) {
       let flowLeftHome = 0;
       let hadPreviousFrame = false;
       let suppressVisibilityCarry = false;
+      let flowAbsorbX = 0;
+      let flowAbsorbY = 0;
+      let flowCarryNormalX = 0;
+      let flowCarryNormalY = 0;
 
       if ((particle.inwardCycleSpan ?? 0) > 0.001) {
         const inwardPhase = lerpCycle(
@@ -1718,6 +1793,15 @@ function UnifiedPointCloud({ data, controls }) {
         );
         const pathStart = lerp(bottomPathStart, 0, orbStaticMask);
         const pathEnd = lerp(fieldPathEnd, 0, orbStaticMask);
+        const arcSide = Math.sign(particle.inwardCycleArc || particle.inwardCycleAbsArc)
+          || (particle.baseX < (data.primaryOrb?.x ?? 0) ? 1 : -1);
+        const hiddenOrbRadius = data.primaryOrb
+          ? Math.max(0, data.primaryOrb.radius - ORB_OCCLUSION_INSET - ORB_HIDDEN_BUFFER)
+          : 0;
+        flowAbsorbX = (data.primaryOrb?.x ?? 0) - (particle.inwardCycleX * hiddenOrbRadius * 0.72);
+        flowAbsorbY = (data.primaryOrb?.y ?? 0) - (particle.inwardCycleY * hiddenOrbRadius * 0.72);
+        flowCarryNormalX = particle.inwardCycleNormalX * arcSide;
+        flowCarryNormalY = particle.inwardCycleNormalY * arcSide;
         let pathPosition = lerp(pathStart, pathEnd, travelT);
         const pathProgress = travelT;
         let arcT = Math.sin(pathProgress * Math.PI);
@@ -1746,7 +1830,7 @@ function UnifiedPointCloud({ data, controls }) {
         suppressVisibilityCarry = activeFlowMask > 0.001 && pathProgress < 0.08;
 
         const arc = particle.inwardCycleArc * (outer + arrival) * 0.34 * arcT * flowArcControl * arcMotionScale;
-        const absArc = (particle.inwardCycleAbsArc ?? 0) * arcT;
+        const absArc = (particle.inwardCycleAbsArc ?? 0) * arcT * flowArcControl * arcMotionScale;
 
         x += (particle.inwardCycleX * pathPosition) + (particle.inwardCycleNormalX * (arc + absArc));
         y += (particle.inwardCycleY * pathPosition) + (particle.inwardCycleNormalY * (arc + absArc));
@@ -1993,17 +2077,27 @@ function UnifiedPointCloud({ data, controls }) {
 
           if (carryingToOrb) {
             continuity.carryToOrb[index] = 1;
-            const toOrbX = orb.x - previousX;
-            const toOrbY = orb.y - previousY;
-            const toOrbLength = Math.max(0.0001, Math.hypot(toOrbX, toOrbY));
             const remaining = Math.max(0, previousOrbDistance - hiddenOrbRadius);
             const continuationStep = Math.min(
               remaining,
               0.95 + (flowSpeedControl * 0.25) + (smoothstep(orb.radius * 4.8, hiddenOrbRadius, previousOrbDistance) * 0.35)
             );
 
-            x = previousX + ((toOrbX / toOrbLength) * continuationStep);
-            y = previousY + ((toOrbY / toOrbLength) * continuationStep);
+            advanceCurvedOrbCarry(
+              curvedCarry,
+              previousX,
+              previousY,
+              flowAbsorbX,
+              flowAbsorbY,
+              orb,
+              hiddenOrbRadius,
+              continuationStep,
+              flowCarryNormalX,
+              flowCarryNormalY,
+              flowArcControl
+            );
+            x = curvedCarry.x;
+            y = curvedCarry.y;
             suppressVisibilityCarry = false;
 
             if (remaining <= continuationStep + 0.001) {
