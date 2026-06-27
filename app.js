@@ -1686,6 +1686,7 @@ function UnifiedPointCloud({ data, controls }) {
     const cohesion = clamp((controls.motionCohesion ?? 1.12) / 1.8, 0, 1);
     const sparseMotion = 0.18 + ((controls.backgroundMotion ?? 1) * 0.82);
     const denseMotion = 0.18 + ((controls.foregroundMotion ?? 1) * 0.82);
+    const mouseReleaseDamping = Math.pow(0.88, safeDelta * 60);
     const curvedCarry = { x: 0, y: 0 };
 
     for (let index = 0; index < data.particles.length; index += 1) {
@@ -1963,8 +1964,10 @@ function UnifiedPointCloud({ data, controls }) {
             // the dot just carries on drifting forward with the flow, toward the
             // orb (where the drifted-fade dissolves it), then recycles. Clear the
             // leftover offset only off-screen, where it can't be seen.
-            velX = 0;
-            velY = 0;
+            velX *= mouseReleaseDamping;
+            velY *= mouseReleaseDamping;
+            offX += velX;
+            offY += velY;
             if (Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40) {
               offX *= 0.8;
               offY *= 0.8;
@@ -1972,8 +1975,10 @@ function UnifiedPointCloud({ data, controls }) {
           }
         } else {
           // No cursor: same — carry on forward, clear only off-screen.
-          velX = 0;
-          velY = 0;
+          velX *= mouseReleaseDamping;
+          velY *= mouseReleaseDamping;
+          offX += velX;
+          offY += velY;
           if (Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40) {
             offX *= 0.8;
             offY *= 0.8;
