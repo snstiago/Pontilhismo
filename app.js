@@ -25,7 +25,7 @@ const FLOW_SIZE_GROW_PER_FRAME = 1.06;
 // to compute that converged state up front, so instead we snapshot it once it HAS
 // settled and restore it on the next load — every reload after the first starts
 // already-synced. Keyed to the exact layout; a different layout just ignores the cache.
-const FLOW_PERSIST_KEY = "pont_flow_continuity_v3";
+const FLOW_PERSIST_KEY = "pont_flow_continuity_v4";
 const FLOW_PERSIST_AFTER = 70; // sim-seconds before we trust the loop is settled
 // Pre-baked settled state shipped with the site. The layout is deterministic (derived
 // from the reference image, not the viewport), so one baked file is valid for every
@@ -706,11 +706,25 @@ function getContinuityFloor(x, y, width, height) {
   const horizonField = smoothstep(height * 0.68, height * 0.28, y)
     * smoothstep(width * 0.06, width * 0.36, x)
     * (1 - smoothstep(width * 0.86, width * 1.02, x));
+  const scaleX = width / REFERENCE_WIDTH;
+  const scaleY = height / REFERENCE_HEIGHT;
+  const orbX = SUN_PROTECT_MASK.x * scaleX;
+  const orbY = SUN_PROTECT_MASK.y * scaleY;
+  const orbRadius = SUN_PROTECT_MASK.radius * ((scaleX + scaleY) * 0.5);
+  const centerColumn = smoothstep(orbRadius * 1.45, orbRadius * 0.12, Math.abs(x - orbX));
+  // Two symmetric side-lobes peaking at ~±1.3R from the orb centreline — they fill the
+  // lower-left/right flank wedges (the measured density valley) that the central column
+  // and the straightened fountain leave under-populated.
+  const sideLobe = (1 - smoothstep(0, orbRadius * 0.55, Math.abs(Math.abs(x - orbX) - (orbRadius * 1.3)))) * 0.7;
+  const belowOrb = smoothstep(orbY + (orbRadius * 0.52), orbY + (orbRadius * 0.95), y)
+    * (1 - smoothstep(height * 0.98, height * 1.06, y));
+  const centerUnderOrbFill = Math.min(1, (centerColumn + sideLobe)) * belowOrb;
   const grain = hash01(x, y, 4361) - 0.5;
 
   return {
-    brightness: clamp(0.012 + (lowerField * 0.16) + (horizonField * 0.04) + (grain * 0.004), 0, 0.24),
-    concentration: clamp(0.018 + (lowerField * 0.155) + (horizonField * 0.034) + (grain * 0.004), 0, 0.24),
+    brightness: clamp(0.012 + (lowerField * 0.16) + (horizonField * 0.04) + (centerUnderOrbFill * 0.1) + (grain * 0.004), 0, 0.24),
+    concentration: clamp(0.018 + (lowerField * 0.155) + (horizonField * 0.034) + (centerUnderOrbFill * 0.12) + (grain * 0.004), 0, 0.24),
+    centerUnderOrbFill,
   };
 }
 
@@ -1159,12 +1173,16 @@ function addLivingMotionProperties(store, focus, width, height) {
     particle.inwardCycleArrivalSpan = arrivalSpan;
     particle.inwardCycleMerge = 1.8 + (fieldMask * 4.8) + (lowerOrbTexture * 1.6);
     const arcSide = (dx > 0) ? -1 : (dx < 0 ? 1 : 0);
+    // Fountain taper: straight up in the central column under the orb, curving more
+    // the further a dot's home X sits from the orb's vertical centreline. 0 near the
+    // centreline -> no lateral arc; 1 out at the flanks -> full existing curve.
+    const lateralFan = smoothstep(focus.radius * 0.12, focus.radius * 1.5, Math.abs(dx));
     particle.inwardCycleX = inwardX;
     particle.inwardCycleY = inwardY;
     particle.inwardCycleNormalX = -inwardY;
     particle.inwardCycleNormalY = inwardX;
-    particle.inwardCycleArc = arcSide * (0.4 + (hash01(particle.baseX, particle.baseY, 8221) * 0.6)) * (0.45 + (fieldMask * 1.35));
-    particle.inwardCycleAbsArc = arcSide * fieldMask * cycleFlowMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 1.25;
+    particle.inwardCycleArc = arcSide * (0.4 + (hash01(particle.baseX, particle.baseY, 8221) * 0.6)) * (0.45 + (fieldMask * 1.35)) * lateralFan;
+    particle.inwardCycleAbsArc = arcSide * fieldMask * cycleFlowMask * (0.5 + (hash01(particle.baseX, particle.baseY, 8225) * 0.5)) * focus.radius * 1.25 * lateralFan;
     particle.inwardCycleArrival = orbMask;
   }
 }
@@ -1203,16 +1221,25 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
       const primaryOrbMask = orbProfile.mask;
       const orbMask = getSuppressedOrbMask(sampleX, sampleY, width, height);
       const continuityFloor = getContinuityFloor(sampleX, sampleY, width, height);
+      const centerUnderOrbFill = continuityFloor.centerUnderOrbFill ?? 0;
       const lowerDensityBias = smoothstep(height * 0.42, height * 0.95, sampleY) * (1 - primaryOrbMask);
       let brightness = clamp(Math.max(
         continuityFloor.brightness + (lowerDensityBias * 0.035),
         (softBrightness * 0.72) + (localBrightness * 0.22) + (sourceBrightness * 0.018)
       ), 0, 1);
       let concentration = Math.pow(clamp(Math.max(
+        continuityFloor.concentration + (lowerDensityBias * 0.055) + (centerUnderOrbFill * 0.045),
+        (softBrightness * 0.74) + (localBrightness * 0.2)
+      ), 0, 1), 1.2);
+      // Size field deliberately OMITS centerUnderOrbFill: the centre fill adds dots
+      // (count) but must not mark the under-orb column as a dense SIZE-zone, otherwise
+      // dots flowing straight up stay bold the whole rise. Without it, the column reads
+      // sparse for sizing, so risers shrink as they ascend — bold only at the bottom,
+      // matching the left/right flanks.
+      const layoutSizeConcentration = Math.pow(clamp(Math.max(
         continuityFloor.concentration + (lowerDensityBias * 0.055),
         (softBrightness * 0.74) + (localBrightness * 0.2)
       ), 0, 1), 1.2);
-      const layoutConcentration = concentration;
 
       if (primaryOrbMask > 0.001) {
         const orbGrain = hash01(sampleX, sampleY, 4387) - 0.5;
@@ -1237,14 +1264,14 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
         const fgi = Math.min(fieldRows - 1, Math.floor(sampleY / fieldCell)) * fieldCols
           + Math.min(fieldCols - 1, Math.floor(sampleX / fieldCell));
         if (concentration > fieldData[fgi]) fieldData[fgi] = concentration;
-        const sizeConcentration = layoutConcentration * (1 - primaryOrbMask);
+        const sizeConcentration = layoutSizeConcentration * (1 - primaryOrbMask);
         if (sizeConcentration > sizeFieldData[fgi]) sizeFieldData[fgi] = sizeConcentration;
       }
 
       const foregroundMask = smoothstep(0.32, 0.92, concentration);
       const foregroundChanceScale = lerp(1, foregroundCircleAmount, foregroundMask);
       const density = Math.pow(brightness, 1.48);
-      const presence = clamp((density * 0.58) + (concentration * 0.94), 0, 1.25);
+      const presence = clamp((density * 0.58) + (concentration * 0.94) + (centerUnderOrbFill * 0.07), 0, 1.25);
 
       if (presence < 0.052) {
         continue;
@@ -1261,7 +1288,7 @@ function buildUnifiedParticles(pixels, width, height, generationControls) {
       const primaryOrbChance = primaryOrbMask * lerp(0.988, 0.9995, sunContinuity);
       const drawChance = clamp(Math.max(
         ((density * 0.7) + (concentration * 0.82)) * foregroundChanceScale * protectionDensity,
-        (continuityChance + (lowerDensityBias * 0.24)) * protectionDensity,
+        (continuityChance + (lowerDensityBias * 0.24) + (centerUnderOrbFill * 0.45)) * protectionDensity,
         primaryOrbChance * lerp(1, 0.9, clamp(dotProtection / 1.8, 0, 1))
       ), 0, 0.998);
 
@@ -1686,7 +1713,6 @@ function UnifiedPointCloud({ data, controls }) {
     const cohesion = clamp((controls.motionCohesion ?? 1.12) / 1.8, 0, 1);
     const sparseMotion = 0.18 + ((controls.backgroundMotion ?? 1) * 0.82);
     const denseMotion = 0.18 + ((controls.foregroundMotion ?? 1) * 0.82);
-    const mouseReleaseDamping = Math.pow(0.88, safeDelta * 60);
     const curvedCarry = { x: 0, y: 0 };
 
     for (let index = 0; index < data.particles.length; index += 1) {
@@ -1960,29 +1986,54 @@ function UnifiedPointCloud({ data, controls }) {
               velY *= 0.3;
             }
           } else {
-            // Out of reach: let go but DON'T snap back — keep the displacement so
-            // the dot just carries on drifting forward with the flow, toward the
-            // orb (where the drifted-fade dissolves it), then recycles. Clear the
-            // leftover offset only off-screen, where it can't be seen.
-            velX *= mouseReleaseDamping;
-            velY *= mouseReleaseDamping;
+            // Out of reach: home the displacement back to 0 with the SAME spring as the
+            // gather but SLOWER, and never let the return push a dot AWAY from the orb —
+            // only inward/tangential motion, so the orb always looks like it's pulling in.
+            const offDist = Math.hypot(offX, offY);
+            if (offDist > 0.1) {
+              const t = 1 - Math.min(1, offDist / mouseRadius);
+              const force = t * t * 0.00010 * mouseRadius;
+              velX += (-offX / offDist) * force;
+              velY += (-offY / offDist) * force;
+            }
+            velX *= 0.95;
+            velY *= 0.95;
+            if (data.primaryOrb) {
+              const rlen = Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) || 0.0001;
+              const rOutX = ((x + offX) - data.primaryOrb.x) / rlen;
+              const rOutY = ((y + offY) - data.primaryOrb.y) / rlen;
+              const radialOut = (velX * rOutX) + (velY * rOutY);
+              if (radialOut > 0) { velX -= radialOut * rOutX; velY -= radialOut * rOutY; }
+            }
             offX += velX;
             offY += velY;
-            if (Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40) {
-              offX *= 0.8;
-              offY *= 0.8;
-            }
+            if (data.primaryOrb && Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) < data.primaryOrb.radius) { offX = 0; offY = 0; }
+            if (Math.hypot(offX, offY) < 0.5) { offX = 0; offY = 0; velX *= 0.5; velY *= 0.5; }
           }
         } else {
-          // No cursor: same — carry on forward, clear only off-screen.
-          velX *= mouseReleaseDamping;
-          velY *= mouseReleaseDamping;
+          // No cursor (mouse left the viewfinder): same slower homing spring, and the
+          // same no-outward rule — dots re-separate toward the orb / sideways, never
+          // away from it, so it never looks like the orb's pull was cancelled.
+          const offDist = Math.hypot(offX, offY);
+          if (offDist > 0.1) {
+            const t = 1 - Math.min(1, offDist / mouseRadius);
+            const force = t * t * 0.00010 * mouseRadius;
+            velX += (-offX / offDist) * force;
+            velY += (-offY / offDist) * force;
+          }
+          velX *= 0.95;
+          velY *= 0.95;
+          if (data.primaryOrb) {
+            const rlen = Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) || 0.0001;
+            const rOutX = ((x + offX) - data.primaryOrb.x) / rlen;
+            const rOutY = ((y + offY) - data.primaryOrb.y) / rlen;
+            const radialOut = (velX * rOutX) + (velY * rOutY);
+            if (radialOut > 0) { velX -= radialOut * rOutX; velY -= radialOut * rOutY; }
+          }
           offX += velX;
           offY += velY;
-          if (Math.abs(x + offX) > halfWidth + 40 || Math.abs(y + offY) > halfHeight + 40) {
-            offX *= 0.8;
-            offY *= 0.8;
-          }
+          if (data.primaryOrb && Math.hypot((x + offX) - data.primaryOrb.x, (y + offY) - data.primaryOrb.y) < data.primaryOrb.radius) { offX = 0; offY = 0; }
+          if (Math.hypot(offX, offY) < 0.5) { offX = 0; offY = 0; velX *= 0.5; velY *= 0.5; }
         }
 
         mouseOffsetRef.current[oi] = offX;
